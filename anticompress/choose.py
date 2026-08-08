@@ -116,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     msg_path, result_path = argv[0], argv[1]
     _attach_console()
+    wait_on_exit = True
     _log(f"chooser start: {msg_path}")
     try:
         msg = json.loads(Path(msg_path).read_text(encoding="utf-8"))
@@ -160,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         if choice in ("n", "2", "no"):
             _log("choice: normal")
             _write_result(result_path, "normal")
+            wait_on_exit = False  # nothing to show — close immediately
             return 0
 
         default_dest = str(Path.home() / "Downloads" / Path(filename).stem)
@@ -194,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_result(result_path, "normal")
     finally:
         _log("chooser exiting")
-        _wait_close()
+        if wait_on_exit:
+            _wait_close()
     return 0
 
 

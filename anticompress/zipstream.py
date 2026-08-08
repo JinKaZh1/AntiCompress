@@ -152,6 +152,34 @@ def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path, progress: Progre
                         remaining -= len(chunk)
                     if not d.eof:
                         raise ValueError(f"truncated deflate stream in {name}")
+            elif method == 93:
+                # Zstandard-compressed entry (APPNOTE method 93; modern archivers)
+                d = zstandard.ZstdDecompressor().decompressobj()
+                if has_desc:
+                    while not d.eof:
+                        chunk = b.read(1 << 16)
+                        data = d.decompress(chunk)
+                        if data:
+                            f.write(data)
+                            crc32 = binascii.crc32(data, crc32)
+                            size_out += len(data)
+                else:
+                    remaining = csize
+                    while remaining > 0:
+                        chunk = b.read(min(remaining, 1 << 16))
+                        data = d.decompress(chunk)
+                        if data:
+                            f.write(data)
+                            crc32 = binascii.crc32(data, crc32)
+                            size_out += len(data)
+                        remaining -= len(chunk)
+                    if not d.eof:
+                        raise ValueError(f"truncated zstd stream in {name}")
+                tail = d.flush()  # completes the frame, verifies its checksum
+                if tail:
+                    f.write(tail)
+                    crc32 = binascii.crc32(tail, crc32)
+                    size_out += len(tail)
             else:
                 raise ValueError(f"unsupported zip method {method} in {name}")
         if has_desc:

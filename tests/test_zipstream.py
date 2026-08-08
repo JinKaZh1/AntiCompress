@@ -1,5 +1,7 @@
+import binascii
 import functools
 import io
+import struct
 import tarfile
 import threading
 import zipfile
@@ -50,6 +52,43 @@ def test_stream_zip(serve, tmp_path):
         dest = tmp_path / "dest"
         stream_zip(url, dest)
         assert_trees_identical(FILES, dest)
+    finally:
+        httpd.shutdown()
+
+
+def _zstd_zip_bytes(name: str, content: bytes) -> bytes:
+    """Hand-build a zip whose single entry uses method 93 (Zstandard)."""
+    import zstandard
+
+    name_b = name.encode()
+    comp = zstandard.ZstdCompressor(level=3).compress(content)
+    crc = binascii.crc32(content) & 0xFFFFFFFF
+    local = (
+        struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, 93, 0, 0, crc, len(comp), len(content), len(name_b), 0)
+        + name_b
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50, 20, 20, 0, 93, 0, 0, crc, len(comp), len(content),
+            len(name_b), 0, 0, 0, 0, 0, 0,
+        )
+        + name_b
+    )
+    eocd = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local) + len(comp), 0
+    )
+    return local + comp + central + eocd
+
+
+def test_stream_zip_zstd_method93(serve, tmp_path):
+    """Zips with Zstandard entries (method 93) must stream-extract."""
+    content = bytes((i * 17 + 3) % 256 for i in range(200000))
+    url, httpd = serve(_zstd_zip_bytes("big.bin", content), ".zip")
+    try:
+        dest = tmp_path / "dest"
+        stream_zip(url, dest)
+        assert (dest / "big.bin").read_bytes() == content
     finally:
         httpd.shutdown()
 

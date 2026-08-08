@@ -59,6 +59,7 @@ def download_package(
     chunk_dir: Path,
     workers: int = 8,
     progress: Progress = None,
+    resume_notice: Callable[[int, int], None] | None = None,
 ) -> Manifest:
     """Fetch {base_url}/manifest.json, then download and extract INTERLEAVED:
     extraction consumes chunks in order as the fetchers fill a bounded window
@@ -74,6 +75,8 @@ def download_package(
         m = deserialize(r.text)
 
         missing = {ci.index: ci for ci in _chunks_needed(chunk_dir, dest_dir, m)}
+        if resume_notice and missing and len(missing) < len(m.chunks):
+            resume_notice(len(m.chunks) - len(missing), len(m.chunks))
         window = max(workers * WINDOW_FACTOR, workers + 2)
         futures: dict[int, cf.Future] = {}
         submitted = 0

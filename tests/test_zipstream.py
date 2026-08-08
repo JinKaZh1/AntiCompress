@@ -1,4 +1,5 @@
 import binascii
+import json
 import functools
 import io
 import struct
@@ -89,6 +90,49 @@ def test_stream_zip_zstd_method93(serve, tmp_path):
         dest = tmp_path / "dest"
         stream_zip(url, dest)
         assert (dest / "big.bin").read_bytes() == content
+    finally:
+        httpd.shutdown()
+
+
+def test_stream_zip_resume_from_entry_boundary(serve, tmp_path):
+    """Closing the console at 80% then re-running must continue from the last
+    completed entry (Range request), not restart."""
+    data = _zip_bytes()
+    total = len(data)
+    # find entry 2's local header offset via the central directory
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = sorted(zf.namelist())
+        assert len(names) >= 3
+        resume_offset = zf.getinfo(names[1]).header_offset
+    url, httpd = serve(data, ".zip")
+    try:
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        # entry 0 was already extracted before the "crash"
+        pre = dest / names[0]
+        pre.parent.mkdir(parents=True, exist_ok=True)
+        pre.write_bytes(FILES[names[0]])
+        # simulate the crash state file (written after entry 0 completed)
+        state = dest / ".anticompress-resume.json"
+        state.write_text(json.dumps({"total": total, "next_offset": resume_offset}))
+        stream_zip(url, dest)
+        assert_trees_identical(FILES, dest)
+        assert not state.exists()  # state cleared on completion
+    finally:
+        httpd.shutdown()
+
+
+def test_stream_zip_resume_rejected_on_size_mismatch(serve, tmp_path):
+    """A different file in the same folder must NOT resume — it restarts clean."""
+    data = _zip_bytes()
+    url, httpd = serve(data, ".zip")
+    try:
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        state = dest / ".anticompress-resume.json"
+        state.write_text(json.dumps({"total": 999999, "next_offset": 500}))  # wrong size
+        stream_zip(url, dest)
+        assert_trees_identical(FILES, dest)  # full fresh download
     finally:
         httpd.shutdown()
 

@@ -136,6 +136,9 @@ def cmd_repack(args: argparse.Namespace) -> None:
 def _stream_plain(url: str, dest: Path) -> None:
     try:
         stream_archive(url, dest, progress=_progress("download", 0))
+    except KeyboardInterrupt:
+        print("\npaused — click the download link again (same folder) to resume")
+        return
     except Exception as e:
         _fail(str(e))
     print(f"\ndone: extracted to {dest}")
@@ -183,7 +186,13 @@ def _acpkg_or_stream(url: str, dest: Path, workers: int) -> None:
             _fail(f"need {need / 1e9:.1f} GB free (have {free / 1e9:.1f} GB)")
         chunk_dir = dest / ".anticompress-chunks"
         try:
-            download_package(base, dest, chunk_dir, workers=workers, progress=_progress("download", m.total_size))
+            download_package(
+                base, dest, chunk_dir, workers=workers, progress=_progress("download", m.total_size),
+                resume_notice=lambda done, total: print(f"\nResuming: {done}/{total} chunks already on disk"),
+            )
+        except KeyboardInterrupt:
+            print("\npaused — click the download link again (same folder) to resume")
+            return
         except Exception as e:
             _fail(str(e))
         print(f"\ndone: {len(m.files)} files extracted to {dest}")
@@ -212,6 +221,9 @@ def cmd_install(args: argparse.Namespace) -> None:
         _fail(f"need {need / 1e9:.1f} GB free (have {free / 1e9:.1f} GB)")
     try:
         extract_package(pkg, dest, m, delete_chunks=True, progress=_progress("install", m.total_size))
+    except KeyboardInterrupt:
+        print("\npaused — re-run install with the same folder to resume")
+        return
     except Exception as e:
         _fail(str(e))
     print(f"\ndone: {len(m.files)} files extracted to {dest}")

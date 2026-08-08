@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import binascii
+import json
 import struct
 import tarfile
 import zlib
@@ -12,6 +13,8 @@ import httpx
 import zstandard
 
 Progress = Callable[[int], None] | None
+
+RESUME_NAME = ".anticompress-resume.json"
 
 _ZIP_LOCAL = struct.Struct("<HHHHHIIIHH")  # after 4-byte sig: ver, flags, method, mtime, mdate, crc, csize, usize, nlen, elen
 _DESC = struct.Struct("<IIII")  # sig, crc, csize, usize
@@ -56,11 +59,16 @@ def _prepend(first: bytes, it: Iterator[bytes]) -> Iterator[bytes]:
 
 
 class _BufferedBlocks:
-    """Reads exact byte counts from an iterator of blocks."""
+    """Reads exact byte counts from an iterator of blocks.
+
+    `consumed` counts bytes the parser actually took (peek only buffers,
+    it does not count) — the resume offset after each entry.
+    """
 
     def __init__(self, blocks: Iterator[bytes]):
         self._blocks = iter(blocks)
         self._buf = bytearray()
+        self.consumed = 0
 
     def read(self, n: int) -> bytes:
         while len(self._buf) < n:
@@ -70,6 +78,7 @@ class _BufferedBlocks:
             self._buf += block
         out = bytes(self._buf[:n])
         del self._buf[:n]
+        self.consumed += n
         return out
 
     def peek(self, n: int) -> bytes:
@@ -79,6 +88,35 @@ class _BufferedBlocks:
                 raise ValueError("unexpected end of stream")
             self._buf += block
         return bytes(self._buf[:n])
+
+
+def _save_resume(state_path: Path, state: dict) -> None:
+    try:
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass  # resume state is best-effort, never fatal
+
+
+def _load_resume(state_path: Path, total: int) -> dict | None:
+    """Return the resume state only if it matches this exact file (same total
+    size) — guards against a different download landing in the same folder."""
+    try:
+        st = json.loads(state_path.read_text(encoding="utf-8"))
+        if st.get("total") == total and 0 < st.get("next_offset", 0) < total:
+            return st
+    except Exception:
+        pass
+    return None
+
+
+def _offset_progress(progress: Progress, base: int) -> Progress:
+    if progress is None or not base:
+        return progress
+
+    def cb(done: int) -> None:
+        progress(base + done)
+
+    return cb
 
 
 def _zip64_sizes(extra: bytes, usize: int, csize: int) -> tuple[int, int]:
@@ -110,11 +148,15 @@ def _counted(blocks: Iterator[bytes], progress: Progress) -> Iterator[bytes]:
         yield block
 
 
-def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path) -> None:
+def _stream_zip_blocks(
+    blocks: Iterator[bytes], dest_dir: Path, state_path: Path | None = None, total: int = 0
+) -> None:
     b = _BufferedBlocks(blocks)
     while True:
         sig = b.peek(4)
         if sig == b"PK\x05\x06" or sig == b"PK\x01\x02" or len(sig) < 4:
+            if state_path is not None:
+                state_path.unlink(missing_ok=True)  # complete: resume state no longer needed
             return  # end of central directory / central directory / clean EOF
         if sig != b"PK\x03\x04":
             raise ValueError(f"bad local header signature: {sig[:4]!r}")
@@ -207,15 +249,29 @@ def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path) -> None:
                 raise ValueError(f"CRC mismatch in {name}")
             if size_out != usize:
                 raise ValueError(f"size mismatch in {name}")
+        if state_path is not None:
+            _save_resume(state_path, {"total": total, "next_offset": b.consumed})
 
 
 def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
+    state_path = dest_dir / RESUME_NAME
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
-        with client.stream("GET", url) as r:
+        try:
+            head = client.head(url)
+        except httpx.HTTPError:
+            head = None
+        total = int(head.headers.get("content-length") or 0) if head is not None else 0
+        resume = _load_resume(state_path, total) if total else None
+        headers = {"Range": f"bytes={resume['next_offset']}-"} if resume else None
+        if resume:
+            print(f"Resuming at {resume['next_offset'] / total * 100:.1f}% ...")
+        with client.stream("GET", url, headers=headers) as r:
             r.raise_for_status()
-            blocks = _counted(r.iter_bytes(1 << 16), progress)
-            _stream_zip_blocks(blocks, dest_dir)
+            if total and progress is not None and hasattr(progress, "set_total"):
+                progress.set_total(total)
+            blocks = _counted(r.iter_bytes(1 << 16), _offset_progress(progress, resume["next_offset"] if resume else 0))
+            _stream_zip_blocks(blocks, dest_dir, state_path=state_path, total=total)
 
 
 class _IterStream:
@@ -270,25 +326,19 @@ def stream_tar(url: str, dest_dir: Path, progress: Progress = None) -> None:
 
 def stream_archive(url: str, dest_dir: Path, progress: Progress = None) -> None:
     """Stream-extract whatever the URL actually IS (magic bytes, not the URL
-    extension — dlproxy-style links carry no extension). rar/7z refuse loudly."""
+    extension — dlproxy-style links carry no extension). rar/7z refuse loudly.
+    Zip dispatches to the resume-aware streamer."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
-            total = int(r.headers.get("content-length") or 0)
-            if total and progress is not None and hasattr(progress, "set_total"):
-                progress.set_total(total)
-            it = r.iter_bytes(1 << 16)
-            first = next(it, b"")
+            first = next(r.iter_bytes(1 << 16), b"")
             kind = _sniff(first)
-            blocks = _counted(_prepend(first, it), progress)
-            if kind == "zip":
-                _stream_zip_blocks(blocks, dest_dir)
-            elif kind in ("tar", "gzip", "xz", "bz2"):
-                _stream_tar_blocks(blocks, dest_dir)
-            elif kind == "zstd":
-                _stream_tar_blocks(blocks, dest_dir, is_zstd=True)
-            elif kind in ("rar", "7z"):
-                raise ValueError("rar/7z cannot stream — run `anticompress repack` first")
-            else:
-                raise ValueError(f"unsupported archive format: {url}")
+    if kind == "zip":
+        stream_zip(url, dest_dir, progress)
+    elif kind in ("tar", "gzip", "xz", "bz2", "zstd"):
+        stream_tar(url, dest_dir, progress)
+    elif kind in ("rar", "7z"):
+        raise ValueError("rar/7z cannot stream — run `anticompress repack` first")
+    else:
+        raise ValueError(f"unsupported archive format: {url}")

@@ -43,6 +43,20 @@ anticompress install game.acpkg -o "D:\Games\Game"
   SHA-256, atomically renames, then deletes each chunk as consumed.
 - Resume is free: files/chunks that exist and match their hash are skipped.
 
+## Pause & resume
+
+- **Ctrl+C** pauses any download cleanly (chunks and partial files stay on
+  disk).
+- **Closed the console by accident?** Just click the download link again and
+  pick the **same destination folder** — downloads continue from where they
+  stopped:
+  - `.acpkg`: verified chunks are skipped automatically.
+  - plain `.zip`: resumes at the last completed file via HTTP Range
+    (state file `.anticompress-resume.json` in the destination; cleared on
+    completion, ignored if the file's size doesn't match).
+  - `.tar.gz` and friends: no resume (gzip streams have no sync points) —
+    they restart.
+
 ## Known limitation
 
 Solid multi-part RAR (FitGirl-style) cannot be streamed from a partial

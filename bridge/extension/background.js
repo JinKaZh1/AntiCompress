@@ -17,9 +17,13 @@ function classify(name) {
 function ask(url, filename, size) {
   const port = browser.runtime.connectNative(HOST);
   port.onMessage.addListener((msg) => {
+    console.log("AntiCompress host message:", JSON.stringify(msg));
     if (msg && msg.action === "normal") {
       RESTART_URLS.add(url);
-      browser.downloads.download({ url }).catch(() => {});
+      browser.downloads
+        .download({ url })
+        .then((id) => console.log("AntiCompress restarted download:", id))
+        .catch((e) => console.error("AntiCompress restart FAILED:", e.message));
       port.disconnect();
     } else if (msg && msg.action === "finished") {
       port.disconnect();

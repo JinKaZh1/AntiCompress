@@ -13,6 +13,17 @@ from pathlib import Path
 CREATE_NEW_CONSOLE = 0x00000010
 RESPONSE_TIMEOUT = 3600.0  # 1 hour to answer the prompt
 
+_LOG_PATH = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")) / "anticompress" / "host.log"
+
+
+def _log(line: str) -> None:
+    try:
+        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {line}\n")
+    except OSError:
+        pass
+
 
 def read_message() -> dict | None:
     raw = sys.stdin.buffer.read(4)
@@ -56,26 +67,35 @@ def wait_for_choice(result_path: Path, timeout: float = RESPONSE_TIMEOUT) -> str
 def _safe_send(msg: dict) -> None:
     try:
         send_message(msg)
-    except Exception:
-        pass  # Firefox already closed the channel — nothing to tell it
+        _log(f"sent: {msg}")
+    except Exception as e:
+        _log(f"send failed ({msg}): {e!r}")
 
 
 def main() -> None:
+    _log("host start")
     msg = read_message()
     if not msg or msg.get("type") != "download":
+        _log(f"bad message: {msg!r}")
         _safe_send({"action": "normal"})
         return
+    _log(f"received: {msg.get('url', '')[:80]}... filename={msg.get('filename')}")
     proc, result_path = spawn_chooser(msg)
-    _safe_send({"action": wait_for_choice(result_path)})
+    _log(f"chooser spawned, result: {result_path}")
+    action = wait_for_choice(result_path)
+    _log(f"choice: {action}")
+    _safe_send({"action": action})
     # Stay alive until the chooser finishes. Firefox tears down the native
     # host's process tree when the host exits — which would kill a still-
     # running download. The "finished" message lets the extension close
     # the port cleanly afterwards.
     try:
         proc.wait()
-    except Exception:
-        pass
+        _log("chooser exited")
+    except Exception as e:
+        _log(f"chooser wait error: {e!r}")
     _safe_send({"action": "finished"})
+    _log("host exit")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,8 @@ def extract_package(
     m: Manifest,
     delete_chunks: bool = True,
     progress: Progress = None,
+    waiters: dict | None = None,
+    on_chunk: Callable[[int], None] | None = None,
 ) -> None:
     """Read chunk files in order, decompress, write game files atomically.
 
@@ -91,11 +93,14 @@ def extract_package(
             continue
 
         path = chunk_dir / chunk_name(ci.index)
-        deadline = time.monotonic() + 300
-        while not path.is_file():
-            if time.monotonic() > deadline:
-                raise FileNotFoundError(f"chunk {ci.index} never arrived")
-            time.sleep(0.2)
+        if waiters is not None and ci.index in waiters:
+            waiters[ci.index].result()  # fetch failure propagates immediately
+        else:
+            deadline = time.monotonic() + 300
+            while not path.is_file():
+                if time.monotonic() > deadline:
+                    raise FileNotFoundError(f"chunk {ci.index} never arrived")
+                time.sleep(0.2)
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != ci.sha256:
             raise ValueError(f"chunk {ci.index} hash mismatch (corrupt or tampered)")
@@ -141,6 +146,8 @@ def extract_package(
         if delete_chunks:
             path.unlink(missing_ok=True)
         stream_pos += size
+        if on_chunk:
+            on_chunk(ci.index)
 
     # drain any trailing zero-byte files (the pos-loop above can't reach them)
     while fi < len(m.files) and m.files[fi].size == 0:

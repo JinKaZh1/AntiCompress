@@ -81,6 +81,33 @@ def test_resume_fetches_only_missing(tmp_path):
         httpd.shutdown()
 
 
+def test_window_stays_bounded_during_download(server, tmp_path):
+    """The core scale guarantee: chunks on disk must never exceed the fetch
+    window — fetch-all-then-extract would double disk usage at 100 GB."""
+    import anticompress.downloader as dl
+
+    httpd, m, pkg = server
+    base = f"http://127.0.0.1:{httpd.server_port}"
+    chunks = tmp_path / "chunks"
+    dest = tmp_path / "dest"
+    peak = [0]
+    real_fetch = dl._fetch_chunk
+
+    def tracking_fetch(client, url, tmp_path_, final_path, sha256, tries=3):
+        real_fetch(client, url, tmp_path_, final_path, sha256, tries)
+        n = len([p for p in chunks.iterdir() if p.suffix == ".zst"])
+        peak[0] = max(peak[0], n)
+
+    dl._fetch_chunk = tracking_fetch
+    try:
+        download_package(base, dest, chunks, workers=2)
+    finally:
+        dl._fetch_chunk = real_fetch
+    assert_trees_identical(FILES, dest)
+    window = max(2 * dl.WINDOW_FACTOR, 2 + 2)
+    assert peak[0] <= window + 4, f"chunk window exceeded: {peak[0]} on disk"
+
+
 def test_corrupt_chunk_on_server_fails_after_retries(server, tmp_path):
     httpd, m, pkg = server
     base = f"http://127.0.0.1:{httpd.server_port}"

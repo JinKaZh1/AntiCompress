@@ -1,9 +1,10 @@
-"""Fetch .acpkg chunks in parallel, verify, extract in order, delete as consumed."""
+"""Fetch .acpkg chunks in parallel (bounded window), extract in order, delete as consumed."""
 from __future__ import annotations
 
 import concurrent.futures as cf
 import hashlib
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -15,6 +16,7 @@ from .extractor import _covered_ranges, extract_package
 from .format import Manifest, chunk_expected_size, chunk_name, deserialize
 
 Progress = Callable[[int], None] | None
+WINDOW_FACTOR = 4  # chunks kept ahead of extraction: workers * WINDOW_FACTOR
 
 
 def _fetch_chunk(client: httpx.Client, url: str, tmp_path: Path, final_path: Path, sha256: str, tries: int = 3) -> None:
@@ -58,8 +60,11 @@ def download_package(
     workers: int = 8,
     progress: Progress = None,
 ) -> Manifest:
-    """Fetch {base_url}/manifest.json, download missing chunks in parallel
-    (verified), then extract strictly in order, deleting chunks as consumed."""
+    """Fetch {base_url}/manifest.json, then download and extract INTERLEAVED:
+    extraction consumes chunks in order as the fetchers fill a bounded window
+    ahead — only ~workers*WINDOW_FACTOR chunks ever exist on disk, so peak
+    space stays 1x even for 100 GB packages (fetch-all-then-extract would
+    double it)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     base = base_url.rstrip("/") + "/"
@@ -68,21 +73,37 @@ def download_package(
         r.raise_for_status()
         m = deserialize(r.text)
 
-        missing = _chunks_needed(chunk_dir, dest_dir, m)
-        if missing:
+        missing = {ci.index: ci for ci in _chunks_needed(chunk_dir, dest_dir, m)}
+        window = max(workers * WINDOW_FACTOR, workers + 2)
+        futures: dict[int, cf.Future] = {}
+        submitted = 0
+        lock = threading.Lock()
 
-            def fetch(ci):
-                _fetch_chunk(
-                    client,
-                    urljoin(base, chunk_name(ci.index)),
-                    chunk_dir / (chunk_name(ci.index) + ".tmp"),
-                    chunk_dir / chunk_name(ci.index),
-                    ci.sha256,
-                )
+        def ensure(up_to: int) -> None:
+            """Submit fetches for missing chunks below `up_to` (idempotent, race-safe)."""
+            nonlocal submitted
+            with lock:
+                while submitted < min(up_to, len(m.chunks)):
+                    ci = missing.get(submitted)
+                    if ci is not None:
+                        futures[submitted] = executor.submit(
+                            _fetch_chunk,
+                            client,
+                            urljoin(base, chunk_name(ci.index)),
+                            chunk_dir / (chunk_name(ci.index) + ".tmp"),
+                            chunk_dir / chunk_name(ci.index),
+                            ci.sha256,
+                        )
+                    submitted += 1
 
-            with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-                for _ in ex.map(fetch, missing):
-                    pass  # first exception propagates, cancelling the rest
+        def on_chunk(index: int) -> None:
+            ensure(index + 1 + window)  # keep the window filled as chunks are consumed
 
-        extract_package(chunk_dir, dest_dir, m, delete_chunks=True, progress=progress)
+        with cf.ThreadPoolExecutor(max_workers=workers) as executor:
+            ensure(window)
+            extract_package(
+                chunk_dir, dest_dir, m,
+                delete_chunks=True, progress=progress,
+                waiters=futures, on_chunk=on_chunk,
+            )
     return m

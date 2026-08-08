@@ -54,6 +54,16 @@ def _attach_console() -> None:
         pass
 
 
+def _box(lines: list[str]) -> str:
+    """Render lines inside a double-line box (UTF-8; degrades safely)."""
+    width = max(len(l) for l in lines) + 4
+    out = ["\u2554" + "\u2550" * (width - 2) + "\u2557"]
+    for l in lines:
+        out.append("\u2551 " + l.ljust(width - 4) + " \u2551")
+    out.append("\u255a" + "\u2550" * (width - 2) + "\u255d")
+    return "\n".join(out)
+
+
 def _wait_close() -> None:
     try:
         input("\nPress Enter to close this window.")
@@ -78,8 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         size = _fmt_size(msg.get("size") or 0)
         _log(f"url={url} filename={filename}")
 
-        print("=== AntiCompress ===")
-        print(f"{filename}  ({size})")
+        print(_box([
+            "AntiCompress",
+            "",
+            f"{filename}  ({size})",
+            "",
+            "[1] Download with AntiCompress (stream)",
+            "[2] Normal download (Firefox saves it)",
+        ]))
         print()
 
         if _looks_like_rar7z(url):

@@ -23,26 +23,57 @@ def _free_space(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
-def _progress(prefix: str, total: int) -> callable:
-    start = time.monotonic()
-    last = 0
+class _Progress:
+    """Renders a live progress line: bar, percent, GB, speed.
 
-    def cb(done: int) -> None:
-        nonlocal last
+    `set_total()` lets a downloader fill in the real size once headers
+    arrive (Content-Length), upgrading the line from GB-only to a % bar.
+    """
+
+    def __init__(self, prefix: str, total: int = 0):
+        self.prefix = prefix
+        self.total = total
+        self.start = None
+        self.last = 0
+
+    def set_total(self, total: int) -> None:
+        self.total = total
+
+    def __call__(self, done: int) -> None:
         now = time.monotonic()
-        if now - last < 0.2 and done < total:
+        if self.start is None:
+            self.start = now  # measure from the first byte, not process start
+        if now - self.last < 0.2 and done < self.total:
             return
-        last = now
-        elapsed = max(now - start, 1e-6)
+        self.last = now
+        elapsed = max(now - self.start, 1e-6)
         speed = done / elapsed / 1e6
-        if total:
-            pct = done / total * 100
-            line = f"\r{prefix} {pct:6.1f}%  {done / 1e9:6.2f}/{total / 1e9:6.2f} GB  {speed:6.1f} MB/s"
+        done_gb = done / 1e9
+        if self.total:
+            pct = done / self.total * 100
+            filled = int(pct / 100 * 20)
+            bar = "\u2588" * filled + "\u2591" * (20 - filled)
+            line = (
+                f"\r{self.prefix} [{bar}] {pct:5.1f}%  "
+                f"{done_gb:5.2f}/{self.total / 1e9:5.2f} GB  {speed:6.1f} MB/s"
+            )
         else:
-            line = f"\r{prefix} {done / 1e9:6.2f} GB  {speed:6.1f} MB/s"
+            line = f"\r{self.prefix} {done_gb:5.2f} GB  {speed:6.1f} MB/s"
         print(line, end="", flush=True)
 
-    return cb
+
+def _progress(prefix: str, total: int) -> _Progress:
+    return _Progress(prefix, total)
+
+
+def _ensure_utf8() -> None:
+    """UTF-8 stdout/stderr with replacement errors — box/block chars degrade
+    to '?' on legacy code pages instead of crashing the whole tool."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def _fail(msg: str) -> None:
@@ -179,6 +210,7 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    _ensure_utf8()
     ap = argparse.ArgumentParser(prog="anticompress", description="Steam-style streaming download + decompress")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

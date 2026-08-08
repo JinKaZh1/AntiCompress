@@ -99,9 +99,19 @@ def _zip64_sizes(extra: bytes, usize: int, csize: int) -> tuple[int, int]:
     raise ValueError("zip64 sizes missing from extra field")
 
 
-def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path, progress: Progress) -> None:
+def _counted(blocks: Iterator[bytes], progress: Progress) -> Iterator[bytes]:
+    """Report NETWORK bytes consumed (progress is about the download, not
+    the decompressed size — otherwise speed/percentage are wrong)."""
+    done = 0
+    for block in blocks:
+        done += len(block)
+        if progress:
+            progress(done)
+        yield block
+
+
+def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path) -> None:
     b = _BufferedBlocks(blocks)
-    total_done = 0
     while True:
         sig = b.peek(4)
         if sig == b"PK\x05\x06" or sig == b"PK\x01\x02" or len(sig) < 4:
@@ -197,9 +207,6 @@ def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path, progress: Progre
                 raise ValueError(f"CRC mismatch in {name}")
             if size_out != usize:
                 raise ValueError(f"size mismatch in {name}")
-        total_done += size_out
-        if progress:
-            progress(total_done)
 
 
 def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
@@ -207,7 +214,8 @@ def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
-            _stream_zip_blocks(r.iter_bytes(1 << 16), dest_dir, progress)
+            blocks = _counted(r.iter_bytes(1 << 16), progress)
+            _stream_zip_blocks(blocks, dest_dir)
 
 
 class _IterStream:
@@ -230,16 +238,13 @@ class _IterStream:
         return out
 
 
-def _stream_tar_blocks(
-    blocks: Iterator[bytes], dest_dir: Path, progress: Progress, is_zstd: bool = False
-) -> None:
+def _stream_tar_blocks(blocks: Iterator[bytes], dest_dir: Path, is_zstd: bool = False) -> None:
     fobj: object = _IterStream(blocks)
     if is_zstd:
         dctx = zstandard.ZstdDecompressor()
         fobj = dctx.stream_reader(fobj)  # type: ignore[arg-type]
     mode = "r|" if is_zstd else "r|*"
     with tarfile.open(fileobj=fobj, mode=mode) as tf:  # type: ignore[arg-type]
-        total = 0
         for member in tf:
             if member.isfile():
                 out = _safe_path(dest_dir, member.name)
@@ -250,9 +255,6 @@ def _stream_tar_blocks(
                         if not block:
                             break
                         dst.write(block)
-                        total += len(block)
-                if progress:
-                    progress(total)
             elif member.isdir():
                 _safe_path(dest_dir, member.name).mkdir(parents=True, exist_ok=True)
 
@@ -262,7 +264,8 @@ def stream_tar(url: str, dest_dir: Path, progress: Progress = None) -> None:
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
-            _stream_tar_blocks(r.iter_bytes(1 << 16), dest_dir, progress)
+            blocks = _counted(r.iter_bytes(1 << 16), progress)
+            _stream_tar_blocks(blocks, dest_dir)
 
 
 def stream_archive(url: str, dest_dir: Path, progress: Progress = None) -> None:
@@ -272,16 +275,19 @@ def stream_archive(url: str, dest_dir: Path, progress: Progress = None) -> None:
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
+            total = int(r.headers.get("content-length") or 0)
+            if total and progress is not None and hasattr(progress, "set_total"):
+                progress.set_total(total)
             it = r.iter_bytes(1 << 16)
             first = next(it, b"")
             kind = _sniff(first)
-            blocks = _prepend(first, it)
+            blocks = _counted(_prepend(first, it), progress)
             if kind == "zip":
-                _stream_zip_blocks(blocks, dest_dir, progress)
+                _stream_zip_blocks(blocks, dest_dir)
             elif kind in ("tar", "gzip", "xz", "bz2"):
-                _stream_tar_blocks(blocks, dest_dir, progress)
+                _stream_tar_blocks(blocks, dest_dir)
             elif kind == "zstd":
-                _stream_tar_blocks(blocks, dest_dir, progress, is_zstd=True)
+                _stream_tar_blocks(blocks, dest_dir, is_zstd=True)
             elif kind in ("rar", "7z"):
                 raise ValueError("rar/7z cannot stream — run `anticompress repack` first")
             else:

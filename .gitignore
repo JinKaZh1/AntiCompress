@@ -1,0 +1,3 @@
+.firecrawl/
+__pycache__/
+*.pyc

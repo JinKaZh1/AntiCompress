@@ -127,11 +127,9 @@ def main(argv: list[str] | None = None) -> int:
             "",
             "  " + style.bold(filename) + "   " + style.yellow(size),
             "",
-            "  " + style.bold(style.accent("Enter")) + "  " + style.bold("Stream download")
-            + style.muted("   \u00b7  1\u00d7 disk space, verified"),
-            "  " + style.bold("n") + "  " + style.muted("Normal download (Firefox saves it)"),
+            "  " + style.bold(style.accent("\u25b8 Stream download")) + style.muted("   \u00b7  1\u00d7 disk space, verified"),
             "",
-            "  " + style.muted("Ctrl+C to pause  \u00b7  resumes where it left off"),
+            "  " + style.muted("Ctrl+C to pause  \u00b7  closing the window cancels"),
         ]
         if "unknown" in size:
             # show the box instantly, then fill the size in when HEAD answers
@@ -153,15 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             print(style.yellow("Downloading it normally in Firefox; afterwards run:"))
             print("  " + style.accent("anticompress repack <archive> -o game.acpkg"))
             _write_result(result_path, "normal")
-            _wait_close()
-            return 0
-
-        choice = input(style.bold(style.accent("Enter") + " to stream, n for normal: ")).strip().lower()
-
-        if choice in ("n", "2", "no"):
-            _log("choice: normal")
-            _write_result(result_path, "normal")
-            wait_on_exit = False  # nothing to show — close immediately
+            wait_on_exit = False
             return 0
 
         default_dest = str(Path.home() / "Downloads" / Path(filename).stem)
@@ -174,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         dest_path = dest_path.resolve()
         dest_path.mkdir(parents=True, exist_ok=True)
         _write_result(result_path, "stream")
+        wait_on_exit = False
         _log(f"choice: stream dest={dest_path}")
         print()
         print(style.accent(f"Starting download to {dest_path} ..."))

@@ -44,19 +44,12 @@ def _write_msg(tmp_path, msg: dict) -> tuple[Path, Path]:
     return mp, tmp_path / "result.json"
 
 
-def test_choice_normal_writes_result(tmp_path, monkeypatch):
-    mp, rp = _write_msg(tmp_path, _msg("http://x/g.zip"))
-    monkeypatch.setattr("builtins.input", lambda *a: "n")
-    assert choose_main([str(mp), str(rp)]) == 0
-    assert json.loads(rp.read_text()) == {"action": "normal"}
-
-
-def test_choice_enter_streams_by_default(tmp_path, monkeypatch):
-    """Bare Enter (empty input) must stream — the default action."""
+def test_choice_streams_without_asking(tmp_path, monkeypatch):
+    """No choice prompt anymore — the chooser streams on its own; only the
+    destination is asked."""
     mp, rp = _write_msg(tmp_path, _msg("http://x/g.zip"))
     monkeypatch.setattr("builtins.input", lambda *a: "")
     monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
-    # would need a real URL to complete; assert it chose stream via result
     assert choose_main([str(mp), str(rp)]) == 0
     assert json.loads(rp.read_text()) == {"action": "stream"}
 
@@ -107,7 +100,7 @@ def test_choice_relative_dest_resolves_under_downloads(tmp_path, monkeypatch, se
     """A relative folder name lands under Downloads, not the chooser's CWD."""
     mp, rp = _write_msg(tmp_path, _msg(serve_zip))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    answers = iter(["", "mygame"])
+    answers = iter(["mygame"])
     monkeypatch.setattr("builtins.input", lambda *a: next(answers))
     monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
     assert choose_main([str(mp), str(rp)]) == 0
@@ -119,7 +112,7 @@ def test_choice_quoted_dest_strips_quotes(tmp_path, monkeypatch, serve_zip):
     of the folder name."""
     mp, rp = _write_msg(tmp_path, _msg(serve_zip))
     dest = tmp_path / "quoted dest"
-    answers = iter(["", f'"{dest}"'])
+    answers = iter([f'"{dest}"'])
     monkeypatch.setattr("builtins.input", lambda *a: next(answers))
     monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
     assert choose_main([str(mp), str(rp)]) == 0
@@ -130,7 +123,7 @@ def test_choice_quoted_dest_strips_quotes(tmp_path, monkeypatch, serve_zip):
 def test_choice_stream_downloads_to_dest(tmp_path, monkeypatch, serve_zip):
     mp, rp = _write_msg(tmp_path, _msg(serve_zip))
     dest = tmp_path / "out"
-    answers = iter(["", str(dest)])
+    answers = iter([str(dest)])
     monkeypatch.setattr("builtins.input", lambda *a: next(answers))
     monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
     assert choose_main([str(mp), str(rp)]) == 0

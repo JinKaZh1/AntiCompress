@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from .bridge import install_bridge
 from .downloader import download_package
 from .extractor import extract_package
 from .format import read_manifest, deserialize
@@ -58,6 +59,16 @@ def _resolve_7z(explicit: str) -> str:
         return found
     alt = Path(r"C:\Program Files\7-Zip\7z.exe")
     return str(alt) if alt.is_file() else explicit
+
+
+def cmd_install_bridge(args: argparse.Namespace) -> None:
+    try:
+        out = install_bridge()
+    except Exception as e:
+        _fail(str(e))
+    print(f"bridge installed:\n  extension: {out['extension']}\n  native host: {out['wrapper']}\n  registry: {out['registry']}")
+    print("Next: Firefox -> about:debugging -> This Firefox -> Load Temporary Add-on ->")
+    print(f"  {Path(out['extension']) / 'manifest.json'}")
 
 
 def cmd_repack(args: argparse.Namespace) -> None:
@@ -173,6 +184,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("package", help="path to the .acpkg folder")
     p.add_argument("-o", "--dest", required=True)
     p.set_defaults(fn=cmd_install)
+
+    p = sub.add_parser("install-bridge", help="register the Firefox bridge (extension + native host)")
+    p.set_defaults(fn=cmd_install_bridge)
 
     args = ap.parse_args(argv)
     args.fn(args)

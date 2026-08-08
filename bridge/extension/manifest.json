@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "AntiCompress",
+  "version": "0.1.0",
+  "description": "Stream-download and auto-decompress with AntiCompress",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "anticompress@anticompress.local"
+    }
+  },
+  "permissions": ["downloads", "nativeMessaging", "contextMenus"],
+  "background": {
+    "scripts": ["background.js"]
+  }
+}

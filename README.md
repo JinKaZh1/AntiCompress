@@ -4,7 +4,36 @@ Steam-style streaming download + decompression for Windows. The archive never
 exists on disk alongside its content **you only ever need room for the
 final game, never the game + its archive.**
 
+## TL;DR for dummies (like me)
+
+**The problem:** you download a 60 GB game in a 50 GB zip, and your PC says
+"you need 110 GB to install this" — because it wants to keep the zip AND the
+game. Dumb.
+
+**The fix:** AntiCompress unpacks the zip *while* it downloads, so you only
+ever need room for the game itself (60 GB, not 110 GB).
+
+**How to use it (the lazy way):**
+
+1. Download `anticompress.exe` from the [releases page](https://github.com/JinKaZh1/AntiCompress/releases)
+2. Run it once and type: `anticompress install-bridge` (one-time setup)
+3. In Firefox: `about:debugging` -> **This Firefox** -> **Load Temporary
+   Add-on** -> pick the `manifest.json` it tells you about
+4. Click any `.zip` download link -> a window pops up -> press **Enter** ->
+   done. Game lands in your Downloads folder, already unpacked.
+
+That's it. That's the whole thing.
+
+**Also works without Firefox:** `anticompress dl https://link-to-file.zip -o D:\Games\MyGame`
+
+**Not sure about something?** Press `Ctrl+C` to pause anything. Close the
+window to cancel. Re-click the same link later and it continues where it
+stopped. You can't break it.
+
+---
+
 ## Install
+
 
 ```
 pip install -r requirements-dev.txt

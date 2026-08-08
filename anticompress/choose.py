@@ -21,7 +21,7 @@ def _log(line: str) -> None:
 
 
 def _fmt_size(size: int) -> str:
-    if not size:
+    if not size or size < 0:
         return "size unknown"
     return f"{size / 1e9:.2f} GB"
 

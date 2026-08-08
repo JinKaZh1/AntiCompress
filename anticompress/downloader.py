@@ -63,7 +63,7 @@ def download_package(
     dest_dir.mkdir(parents=True, exist_ok=True)
     chunk_dir.mkdir(parents=True, exist_ok=True)
     base = base_url.rstrip("/") + "/"
-    with httpx.Client(follow_redirects=True, timeout=60) as client:
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(connect=30, read=120, write=60, pool=30)) as client:
         r = client.get(urljoin(base, "manifest.json"))
         r.raise_for_status()
         m = deserialize(r.text)

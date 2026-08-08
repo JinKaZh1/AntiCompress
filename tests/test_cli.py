@@ -84,6 +84,37 @@ def test_dl_plain_zip(tmp_path, serve_dir):
         httpd.shutdown()
 
 
+def test_dlproxy_style_server_streams_zip(tmp_path):
+    """A server that answers EVERY path with the actual file (dlproxy-style)
+    must not be mistaken for an .acpkg and must stream-extract correctly —
+    the manifest probe may only peek, never buffer the file."""
+    import io
+    import shutil
+
+    src = tmp_path / "game.zip"
+    _make_zip(src)
+
+    class _AnyPathHandler(_QuietHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.end_headers()
+            with open(Path(self.directory) / "game.zip", "rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+
+    handler = functools.partial(_AnyPathHandler, directory=str(tmp_path))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_port}/game.zip"
+        dest = tmp_path / "dest"
+        main(["dl", url, "-o", str(dest)])
+        assert_trees_identical(FILES, dest)
+    finally:
+        httpd.shutdown()
+
+
 def test_space_gate_blocks(tmp_path):
     with pytest.raises(SystemExit):
         main(["dl", "http://127.0.0.1:1/x.zip", "-o", str(tmp_path / "dest")])

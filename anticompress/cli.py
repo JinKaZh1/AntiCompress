@@ -102,38 +102,52 @@ def _stream_plain(url: str, dest: Path) -> None:
     print(f"\ndone: extracted to {dest}")
 
 
+def _probe_manifest(client: httpx.Client, base: str):
+    """Peek at {base}manifest.json; return the parsed manifest if it looks
+    like one, else None. Never buffers large non-JSON responses — some
+    servers answer every path with the actual file (dlproxy-style)."""
+    try:
+        with client.stream("GET", base + "manifest.json") as r:
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            head = b""
+            for block in r.iter_bytes(8192):
+                head += block
+                if len(head) >= 4096:
+                    break
+        if not head.lstrip().startswith(b"{"):
+            return None  # binary file / HTML — not a manifest
+        r2 = client.get(base + "manifest.json")
+        r2.raise_for_status()
+        return deserialize(r2.text)
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
 def _acpkg_or_stream(url: str, dest: Path, workers: int) -> None:
     """Try .acpkg (manifest present) first; fall back to plain zip/tar streaming."""
     base = url.rstrip("/") + "/"
     is_acpkg = url.rstrip("/").endswith(".acpkg")
-    try:
-        with httpx.Client(follow_redirects=True, timeout=30) as c:
-            r = c.get(base + "manifest.json")
-            if r.status_code == 404 and not is_acpkg:
-                _stream_plain(url, dest)
-                return
-            r.raise_for_status()
-            m = deserialize(r.text)
-    except httpx.HTTPError as e:
-        if is_acpkg:
-            _fail(f"cannot fetch .acpkg manifest: {e}")
-        _stream_plain(url, dest)
-        return
-    except ValueError as e:
-        if is_acpkg:
-            _fail(f"invalid .acpkg: {e}")
-        _stream_plain(url, dest)
-        return
-    free = _free_space(dest)
-    need = m.total_size + BUFFER_BYTES
-    if free < need:
-        _fail(f"need {need / 1e9:.1f} GB free (have {free / 1e9:.1f} GB)")
-    chunk_dir = dest / ".anticompress-chunks"
-    try:
-        download_package(base, dest, chunk_dir, workers=workers, progress=_progress("download", m.total_size))
-    except Exception as e:
-        _fail(str(e))
-    print(f"\ndone: {len(m.files)} files extracted to {dest}")
+    with httpx.Client(
+        follow_redirects=True, timeout=httpx.Timeout(connect=30, read=30, write=30, pool=30)
+    ) as client:
+        m = _probe_manifest(client, base)
+        if m is None:
+            if is_acpkg:
+                _fail("not a valid .acpkg (no manifest.json found at the URL)")
+            _stream_plain(url, dest)
+            return
+        free = _free_space(dest)
+        need = m.total_size + BUFFER_BYTES
+        if free < need:
+            _fail(f"need {need / 1e9:.1f} GB free (have {free / 1e9:.1f} GB)")
+        chunk_dir = dest / ".anticompress-chunks"
+        try:
+            download_package(base, dest, chunk_dir, workers=workers, progress=_progress("download", m.total_size))
+        except Exception as e:
+            _fail(str(e))
+        print(f"\ndone: {len(m.files)} files extracted to {dest}")
 
 
 def cmd_dl(args: argparse.Namespace) -> None:

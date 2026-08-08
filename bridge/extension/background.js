@@ -40,7 +40,7 @@ browser.downloads.onCreated.addListener(async (item) => {
   } catch (e) {
     // Download already finished (tiny file) — the chooser still gets offered.
   }
-  ask(item.url, item.filename || "", item.fileSize || 0);
+  ask(item.url, item.filename || "", item.fileSize > 0 ? item.fileSize : 0);
 });
 
 // Secondary flow: right-click a link -> Download with AntiCompress.

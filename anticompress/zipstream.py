@@ -148,7 +148,7 @@ def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path, progress: Progre
 
 def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(follow_redirects=True, timeout=60) as client:
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(connect=30, read=120, write=60, pool=30)) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
             _stream_zip_blocks(r.iter_bytes(1 << 16), dest_dir, progress)
@@ -176,7 +176,7 @@ class _IterStream:
 
 def stream_tar(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(follow_redirects=True, timeout=60) as client:
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(connect=30, read=120, write=60, pool=30)) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
             fobj: object = _IterStream(r.iter_bytes(1 << 16))

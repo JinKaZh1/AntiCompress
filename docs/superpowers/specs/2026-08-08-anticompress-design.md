@@ -27,13 +27,20 @@ Converts an existing RAR/7z/zip archive into the `.acpkg` format (chunked zstd
 source archive on a second drive). After this, the package streams anywhere
 with 1x space.
 
-Pipeline: `[RAR/7z/zip] → 7-Zip CLI (CRC-verified, streams file-by-file in
-order) → chunker (fixed 1 MiB pieces) → zstd per chunk (frame checksum
-enabled) → [game.acpkg = manifest.json + chunk stream]`
+Pipeline: `[RAR/7z/zip] → 7z x -so (single pass, works for solid archives,
+CRC-verified) → chunker (fixed 1 MiB pieces) → zstd per chunk (frame checksum
+enabled) → [game.acpkg = chunk stream + manifest + footer]`
 
-7-Zip's built-in CRC checks verify the source while reading. A corrupt source
-archive **fails the repack loudly** — garbage in never becomes a trusted
-package.
+`7z x -so` emits every file's bytes concatenated in archive order in ONE
+pass — the only way to repack solid RAR without O(n²) per-file extraction,
+and avoids any temp extraction directory (which would need 3x space). File
+offsets in the manifest come from `7z l -slt` sizes summed in listing
+order; the repacker **sample-verifies** that order assumption (extract 2-3
+files per top-level dir via `7z x <file> -so`, compare SHA-256 against the
+package bytes at their computed offsets). Any mismatch → refuse the
+package loudly. 7-Zip sets binary mode on piped stdout on Windows (covered
+by round-trip tests). Peak space: archive + package — the source archive
+can live on a second drive / external USB.
 
 ### 2.2 `anticompress dl <url> [-o <dest>]`
 
@@ -42,11 +49,15 @@ touches disk. Auto-detects the URL's format:
 
 - **`.acpkg`** → full manifest pipeline (below).
 - **plain `.zip` / `.tar.gz` / `.tar.zst`** → direct streaming extraction,
-  no repack needed, verified with the archive's own CRC checks.
+  no repack needed. Zip: stream entries via local headers (`stream-unzip`
+  handles data-descriptor and zip64 cases), verify each entry's CRC-32
+  after decompression, refuse loudly on unsupported features. Tar:
+  sequential records via Python tarfile streaming mode. Free-space estimate
+  from Content-Length + per-file check before each write.
 - **`.rar` / `.7z`** → refuses with a clear message: these can't stream
   (solid-archive law); run `repack` first (see 2.4 limitation).
 
-Pipeline: `manifest (downloaded first, verified first) → sequential streaming download (httpx), each chunk's SHA-256 verified as it completes → zstd decompress → assemble files as .acpart temps → per-file SHA-256 → atomic rename → done`
+Pipeline: `manifest (fetched via one tail Range request, verified first) → sequential streaming download (httpx), each chunk's SHA-256 verified as it completes → zstd decompress → assemble files as .acpart temps → per-file SHA-256 → atomic rename → done`
 
 The package is **never written to disk as a whole**. Only a bounded sliding
 window of compressed bytes exists at any moment (RAM buffer / small temp),
@@ -86,6 +97,19 @@ the 2x-space damage is already done and nothing can fix it.
 
 Right-click → "Download with AntiCompress" (and/or auto-capture).
 
+Mechanics: `downloads.onCreated` → `downloads.cancel(id)` (a few KB max;
+Firefox offers no blocking cancel) → native message (4-byte length-prefixed
+JSON via registered native messaging host, HKCU registry) → host spawns the
+terminal chooser with CREATE_NEW_CONSOLE → user picks.
+
+**Restart-loop guard:** when the user picks "Normal", the extension
+restarts the download with `browser.downloads.download(url)`; the onCreated
+handler keeps a set of pending-restart URLs and skips them, so the restart
+never re-triggers the chooser.
+
+**blob:/data: URLs** (in-page generated downloads) can't be streamed by the
+CLI → the chooser offers "Normal download" only.
+
 **Terminal chooser (primary flow):** when a download is intercepted, the
 bridge spawns a visible console window (`CREATE_NEW_CONSOLE` — native
 messaging hosts otherwise run hidden) showing the filename + size with two
@@ -97,12 +121,18 @@ clicks.
 
 ## 3. `.acpkg` format
 
-- **manifest.json** (first bytes of the package, small): format version,
-  chunk size (1 MiB), total sizes, file list (relative path, size, offset in
-  decompressed stream), per-file SHA-256, per-chunk entries (compressed
-  offset, compressed size, uncompressed size, SHA-256), package SHA-256.
-  The manifest itself is verified before being trusted. Compressed offsets
-  let the downloader re-fetch a single bad chunk via HTTP Range.
+- **manifest.json** (at the END of the package — it cannot be written
+  first, since chunk compressed sizes are only known after compression;
+  a footer makes it findable): format version, chunk size (1 MiB), total
+  sizes, file list (relative path, size, offset in decompressed stream),
+  per-file SHA-256, per-chunk entries (compressed offset, compressed size,
+  uncompressed size, SHA-256), manifest self-hash. Verified before being
+  trusted. Compressed offsets let the downloader re-fetch a single bad
+  chunk via HTTP Range.
+- **footer** (last 64 bytes): magic, format version, manifest length,
+  manifest SHA-256 — the downloader fetches the manifest with one tail
+  Range request (zip's central directory sits at the end for the same
+  reason).
 - **chunk stream**: fixed 1 MiB decompressed-size chunks, each zstd-compressed
   with the zstd content-checksum flag enabled (xxHash64 embedded per frame).
 
@@ -166,6 +196,10 @@ If the tool says "done", files are bit-identical to what the repacker read.
 4. **Space-gate**: run with insufficient free space → fails before download.
 5. **Manifest tamper**: alter manifest → refused.
 6. **Repack CRC gate**: corrupt source archive → repack refuses.
+7. **Order-verification**: repack a fixture whose listing order differs from
+   extraction order → repack refuses (no bad package).
+8. **Restart guard**: simulate "Normal" restart → onCreated skips it, no
+   chooser loop.
 
 ## 8. Scope notes
 

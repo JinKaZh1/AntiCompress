@@ -49,24 +49,38 @@ def _fail(msg: str) -> None:
     raise SystemExit(1)
 
 
+def _resolve_7z(explicit: str) -> str:
+    """Resolve 7z.exe: explicit path wins; else PATH; else standard install location."""
+    if explicit != "7z":
+        return explicit
+    found = shutil.which("7z")
+    if found:
+        return found
+    alt = Path(r"C:\Program Files\7-Zip\7z.exe")
+    return str(alt) if alt.is_file() else explicit
+
+
 def cmd_repack(args: argparse.Namespace) -> None:
     archive = Path(args.archive)
     out = Path(args.out)
+    seven_zip = _resolve_7z(args.seven_zip)
     if not archive.is_file():
         _fail(f"{archive} not found")
+    if not Path(seven_zip).is_file() and shutil.which(seven_zip) is None:
+        _fail(f"7z not found (install from 7-zip.org or pass --7z PATH)")
     free = _free_space(out if out.exists() else out.parent)
     src = archive.stat().st_size
     if free < src:
         _fail(f"need ~{src / 1e9:.1f} GB free for repack (have {free / 1e9:.1f} GB); "
               f"put the source archive on a drive with room")
-    print(f"repacking {archive} → {out}/ (single pass, this can take a while)")
+    print(f"repacking {archive} -> {out}/ (single pass, this can take a while)")
     t0 = time.monotonic()
     try:
-        m = repack(archive, out, seven_zip=args.seven_zip, progress=_progress("repack", 0))
+        m = repack(archive, out, seven_zip=seven_zip, progress=_progress("repack", 0))
     except (RuntimeError, ValueError) as e:
         _fail(str(e))
     print(f"\ndone in {time.monotonic() - t0:.0f}s: {len(m.files)} files, "
-          f"{m.total_size / 1e9:.1f} GB → {out}")
+          f"{m.total_size / 1e9:.1f} GB -> {out}")
 
 
 def _stream_plain(url: str, dest: Path) -> None:

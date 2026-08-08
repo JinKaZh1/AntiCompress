@@ -11,7 +11,7 @@ def build_package(files: dict[str, bytes], pkg_dir: Path) -> Manifest:
     """Build a .acpkg chunk folder from {relative_path: content} bytes."""
     pkg_dir.mkdir(parents=True, exist_ok=True)
     chunks, total = write_chunks(iter(files.values()), pkg_dir)
-    manifest = Manifest(total_size=total)
+    manifest = Manifest(total_size=total, chunks=chunks)
     offset = 0
     for path, content in files.items():
         manifest.files.append(FileEntry(path=path, size=len(content), offset=offset, sha256=""))

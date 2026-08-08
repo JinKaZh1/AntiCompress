@@ -3,6 +3,16 @@
 const RESTART_URLS = new Set();
 const HOST = "anticompress";
 
+// Only archives need AntiCompress — everything else downloads normally.
+const ARCHIVE_EXT = /\.(zip|rar|7z|tar|gz|zst|xz|bz2|tzst|iso|001)$/i;
+const PASS_EXT = /\.(mp3|mp4|mkv|avi|mov|wav|flac|webm|jpg|jpeg|png|gif|webp|pdf|txt|doc|docx|xls|xlsx|ppt|pptx|exe|msi|apk|dmg|epub)$/i;
+
+function classify(name) {
+  if (ARCHIVE_EXT.test(name)) return "archive";
+  if (PASS_EXT.test(name)) return "pass"; // let Firefox save it, no chooser
+  return "ask"; // unknown -> chooser, we can't tell what it is
+}
+
 function ask(url, filename, size) {
   const port = browser.runtime.connectNative(HOST);
   port.onMessage.addListener((msg) => {
@@ -34,6 +44,10 @@ browser.downloads.onCreated.addListener(async (item) => {
   if (item.url.startsWith("blob:") || item.url.startsWith("data:")) {
     // In-page generated downloads can't be streamed — let Firefox handle them.
     return;
+  }
+  const kind = classify(item.filename || item.url);
+  if (kind === "pass") {
+    return; // media/docs/executables: normal download, no interruption
   }
   try {
     await browser.downloads.cancel(item.id);

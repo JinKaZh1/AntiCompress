@@ -10,6 +10,8 @@ from pathlib import Path
 
 import httpx
 
+from . import style
+
 _LOG_PATH = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")) / "anticompress" / "chooser.log"
 
 
@@ -72,20 +74,23 @@ def _attach_console() -> None:
         pass
 
 
-def _box(lines: list[str]) -> str:
-    """Render lines inside a double-line box (UTF-8; degrades safely)."""
-    width = max(len(l) for l in lines) + 4
-    out = ["\u2554" + "\u2550" * (width - 2) + "\u2557"]
-    for l in lines:
-        out.append("\u2551 " + l.ljust(width - 4) + " \u2551")
-    out.append("\u255a" + "\u2550" * (width - 2) + "\u255d")
-    return "\n".join(out)
+def _box(title: str, lines: list[str]) -> str:
+    """Rounded-corner box with a titled top border; content may carry ANSI."""
+    inner = max([style.width(title) + 2] + [style.width(l) for l in lines]) + 2
+    top = (
+        style.dim("\u256d\u2500 ")
+        + style.bold(style.accent(title))
+        + style.dim(" \u2500" + "\u2500" * max(inner - style.width(title) - 4, 0) + "\u256e")
+    )
+    mid = [style.dim("\u2502 ") + l + style.dim(" " * max(inner - style.width(l), 0) + " \u2502") for l in lines]
+    bottom = style.dim("\u2570" + "\u2500" * (inner + 2) + "\u256f")
+    return "\n".join([top, *mid, bottom])
 
 
 def _redraw(lines: list[str]) -> None:
     """Replace the box already on screen with a new one (ANSI up + clear)."""
     try:
-        box = _box(lines)
+        box = _box("AntiCompress", lines)
         printed = box.count("\n") + 2  # box lines + the trailing blank
         sys.stdout.write(f"\x1b[{printed}A\x1b[J")
         print(box)
@@ -118,37 +123,40 @@ def main(argv: list[str] | None = None) -> int:
         filename = Path(msg.get("filename") or "download").name
         size = _fmt_size(msg.get("size") or 0)
         box_lines = [
-            "AntiCompress",
             "",
-            f"{filename}  ({size})",
+            "  " + style.bold(filename) + "   " + style.yellow(size),
             "",
-            "[1] Download with AntiCompress (stream)",
-            "[2] Normal download (Firefox saves it)",
+            "  " + style.bold(style.accent("[1]")) + "  " + style.bold("Stream download")
+            + style.muted("   \u00b7  1\u00d7 disk space, verified"),
+            "  " + style.bold(style.accent("[2]")) + "  " + style.bold("Normal download")
+            + style.muted("   \u00b7  Firefox saves it"),
+            "",
+            "  " + style.muted("Ctrl+C to pause  \u00b7  resumes where it left off"),
         ]
         if "unknown" in size:
             # show the box instantly, then fill the size in when HEAD answers
-            print(_box(box_lines))
+            print(_box("AntiCompress", box_lines))
             print()
             fetched = _fetch_size(url)
             if fetched:
                 size = fetched
-                box_lines[2] = f"{filename}  ({size})"
+                box_lines[1] = "  " + style.bold(filename) + "   " + style.yellow(size)
                 _redraw(box_lines)
         else:
-            print(_box(box_lines))
+            print(_box("AntiCompress", box_lines))
             print()
         _log(f"url={url} filename={filename} size={size}")
 
         if _looks_like_rar7z(url):
             _log("rar/7z detected -> normal")
-            print("This is a RAR/7z archive - AntiCompress cannot stream those.")
-            print("Downloading it normally in Firefox; afterwards run:")
-            print("  anticompress repack <archive> -o game.acpkg")
+            print(style.yellow("This is a RAR/7z archive - AntiCompress cannot stream those."))
+            print(style.yellow("Downloading it normally in Firefox; afterwards run:"))
+            print("  " + style.accent("anticompress repack <archive> -o game.acpkg"))
             _write_result(result_path, "normal")
             _wait_close()
             return 0
 
-        choice = input("Choice [1/2]: ").strip()
+        choice = input(style.bold(style.accent("Choice [1/2]: "))).strip()
 
         if choice != "1":
             _log("choice: normal")
@@ -167,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_result(result_path, "stream")
         _log(f"choice: stream dest={dest_path}")
         print()
-        print(f"Starting download to {dest_path} ...")
+        print(style.accent(f"Starting download to {dest_path} ..."))
         print()
         try:
             from .cli import _acpkg_or_stream

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from . import style
 from .bridge import install_bridge
 from .downloader import download_package
 from .extractor import extract_package
@@ -60,13 +61,22 @@ class _Progress:
         if self.total:
             pct = min(done / self.total * 100, 100.0)
             filled = int(pct / 100 * 20)
-            bar = "\u2588" * filled + "\u2591" * (20 - filled)
+            bar = style.accent("\u2588" * filled) + style.dim("\u2591" * (20 - filled))
+            eta = ""
+            if speed > 0.5 and done < self.total:
+                eta_s = int((self.total - done) / (speed * 1e6))
+                eta = style.muted(f"  \u00b7  ETA {eta_s // 60}m {eta_s % 60:02d}s")
+            speed_col = style.green if speed >= 1.0 else style.yellow
             line = (
-                f"{self.prefix} [{bar}] {pct:5.1f}%  "
-                f"{done_gb:5.2f}/{self.total / 1e9:5.2f} GB  {speed:6.1f} MB/s"
+                style.dim(self.prefix)
+                + " " + bar
+                + " " + style.bold(f"{pct:5.1f}%")
+                + "  " + style.muted(f"{done_gb:5.2f}/{self.total / 1e9:5.2f} GB")
+                + "  " + speed_col(f"{speed:6.1f} MB/s")
+                + eta
             )
         else:
-            line = f"{self.prefix} {done_gb:5.2f} GB  {speed:6.1f} MB/s"
+            line = style.dim(self.prefix) + " " + style.muted(f"{done_gb:5.2f} GB")
         # fixed width + clear-to-end: a shorter line can never leave tail residue
         print("\r" + line.ljust(80) + "\x1b[K", end="", flush=True)
 
@@ -124,7 +134,7 @@ def cmd_repack(args: argparse.Namespace) -> None:
     if free < src:
         _fail(f"need ~{src / 1e9:.1f} GB free for repack (have {free / 1e9:.1f} GB); "
               f"put the source archive on a drive with room")
-    print(f"repacking {archive} -> {out}/ (single pass, this can take a while)")
+    print(style.accent(f"Repacking {archive} -> {out}/ (single pass)"))
     t0 = time.monotonic()
     try:
         m = repack(archive, out, seven_zip=seven_zip, progress=_progress("repack", 0))

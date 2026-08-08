@@ -77,6 +77,14 @@ def extract_package(
             and skip[covered_idx][1] >= stream_pos + size
         ):
             stream_pos += size
+            # advance past files fully consumed by the skipped region
+            # (covered files are already verified on disk; empty files get created)
+            while fi < len(m.files) and m.files[fi].offset + m.files[fi].size <= stream_pos:
+                if m.files[fi].size == 0:
+                    final = dest_dir / m.files[fi].path
+                    final.parent.mkdir(parents=True, exist_ok=True)
+                    final.write_bytes(b"")
+                fi += 1
             done += size
             if progress:
                 progress(done)

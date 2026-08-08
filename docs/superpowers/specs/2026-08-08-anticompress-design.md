@@ -38,7 +38,13 @@ package.
 ### 2.2 `anticompress dl <url> [-o <dest>]`
 
 The Steam moment. Downloads and decompresses in one pass; the archive never
-touches disk.
+touches disk. Auto-detects the URL's format:
+
+- **`.acpkg`** → full manifest pipeline (below).
+- **plain `.zip` / `.tar.gz` / `.tar.zst`** → direct streaming extraction,
+  no repack needed, verified with the archive's own CRC checks.
+- **`.rar` / `.7z`** → refuses with a clear message: these can't stream
+  (solid-archive law); run `repack` first (see 2.4 limitation).
 
 Pipeline: `manifest (downloaded first, verified first) → sequential streaming download (httpx), each chunk's SHA-256 verified as it completes → zstd decompress → assemble files as .acpart temps → per-file SHA-256 → atomic rename → done`
 
@@ -58,6 +64,18 @@ our per-chunk SHA-256 verification, implemented inside our own stream loop.
 aria2 remains a candidate only for v2 parallel prefetch, where consumed
 chunk files would be deleted as they're processed.
 
+### 2.4 Known limitation: multi-part solid RAR
+
+The ideal "click link → just works" hits a hard wall with FitGirl-style
+multi-part RAR repacks (`part1.rar … partN.rar`): in solid archives, file
+data spans volumes, so no tool on earth can stream them — not us, not
+anyone. Format law, not a design choice.
+
+Those require: download all parts normally (2x space, once) → `repack` the
+parts into one `.acpkg` → from then on it streams with 1x space forever.
+The bridge can still help: when it sees `part1.rar`, it offers to capture
+all part URLs in one go and queues the repack after the last part lands.
+
 ### 2.3 Firefox bridge
 
 Tiny Firefox extension + native messaging host. **Intercepts the download
@@ -67,6 +85,15 @@ take over" behavior is a hard requirement; if Firefox saved the archive first,
 the 2x-space damage is already done and nothing can fix it.
 
 Right-click → "Download with AntiCompress" (and/or auto-capture).
+
+**Terminal chooser (primary flow):** when a download is intercepted, the
+bridge spawns a visible console window (`CREATE_NEW_CONSOLE` — native
+messaging hosts otherwise run hidden) showing the filename + size with two
+choices: **[1] Download with AntiCompress** (streams, progress bar in the
+same terminal) or **[2] Normal download** (CLI exits quietly; the extension
+restarts the download in Firefox via `browser.downloads.download()`, like
+nothing happened). The CLI *is* the dialog — no browser tabs, no extra
+clicks.
 
 ## 3. `.acpkg` format
 

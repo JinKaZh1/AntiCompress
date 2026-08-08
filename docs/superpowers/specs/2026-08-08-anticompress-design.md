@@ -16,20 +16,26 @@ Space math: need = final extracted size + small buffer. Never
 download-size + extracted-size. The tool checks free space against the final
 size **before downloading a single byte** and fails fast if insufficient.
 
+**The core mechanism: everything on disk is consumable.** The package is a
+*folder of independent chunk files*, so any copy of the data (source archive
+parts, downloaded chunks) can be deleted the moment its bytes have been
+consumed. Peak disk ≈ max(final size, remaining source + chunks written),
+never a full duplicate.
+
 ## 2. Components
 
 Three pieces, Python 3, Windows-first:
 
 ### 2.1 `anticompress repack <archive> -o <out.acpkg>`
 
-Converts an existing RAR/7z/zip archive into the `.acpkg` format (chunked zstd
-+ manifest). Runs **once**, on the machine that has 2x space (or with the
-source archive on a second drive). After this, the package streams anywhere
-with 1x space.
+Converts an existing RAR/7z/zip archive into a `.acpkg` chunk folder (chunked
+zstd + manifest). Runs **once**, and thanks to delete-as-you-go it fits on
+the machine that only has room for the final game — e.g. 90GB FitGirl parts
+→ 120GB game on 140GB free works (see 2.4).
 
 Pipeline: `[RAR/7z/zip] → 7z x -so (single pass, works for solid archives,
 CRC-verified) → chunker (fixed 1 MiB pieces) → zstd per chunk (frame checksum
-enabled) → [game.acpkg = chunk stream + manifest + footer]`
+enabled) → [out.acpkg/ = manifest.json + chunk-NNNNNN.zst files]`
 
 `7z x -so` emits every file's bytes concatenated in archive order in ONE
 pass — the only way to repack solid RAR without O(n²) per-file extraction,
@@ -39,15 +45,21 @@ order; the repacker **sample-verifies** that order assumption (extract 2-3
 files per top-level dir via `7z x <file> -so`, compare SHA-256 against the
 package bytes at their computed offsets). Any mismatch → refuse the
 package loudly. 7-Zip sets binary mode on piped stdout on Windows (covered
-by round-trip tests). Peak space: archive + package — the source archive
-can live on a second drive / external USB.
+by round-trip tests).
+
+**Part-deletion watchdog (multi-part RAR):** a background thread watches the
+source parts; each `.partXX.rar` is deleted the moment 7-Zip stops reading it
+(try-delete, retry on lock — best-effort, never fatal). Parts shrink as
+chunks grow, so peak disk during repack ≈ source size, not 2x. If the
+watchdog can't keep up (7-Zip holding parts open), it degrades gracefully to
+"archive + package" — correct either way.
 
 ### 2.2 `anticompress dl <url> [-o <dest>]`
 
 The Steam moment. Downloads and decompresses in one pass; the archive never
 touches disk. Auto-detects the URL's format:
 
-- **`.acpkg`** → full manifest pipeline (below).
+- **`.acpkg/` folder** → full manifest pipeline (below).
 - **plain `.zip` / `.tar.gz` / `.tar.zst`** → direct streaming extraction,
   no repack needed. Zip: stream entries via local headers (`stream-unzip`
   handles data-descriptor and zip64 cases), verify each entry's CRC-32
@@ -55,37 +67,34 @@ touches disk. Auto-detects the URL's format:
   sequential records via Python tarfile streaming mode. Free-space estimate
   from Content-Length + per-file check before each write.
 - **`.rar` / `.7z`** → refuses with a clear message: these can't stream
-  (solid-archive law); run `repack` first (see 2.4 limitation).
+  (solid-archive law); run `repack` first (see 2.4).
 
-Pipeline: `manifest (fetched via one tail Range request, verified first) → sequential streaming download (httpx), each chunk's SHA-256 verified as it completes → zstd decompress → assemble files as .acpart temps → per-file SHA-256 → atomic rename → done`
+Pipeline (`.acpkg`): `manifest.json (fetched first, verified first) →
+parallel fetch of a bounded window of chunk files (N connections, e.g. 8) →
+each chunk SHA-256 verified on arrival → extracted strictly in chunk order →
+game files assembled as .acpart temps → per-file SHA-256 → atomic rename →
+chunk file deleted as soon as its bytes are extracted`
 
-The package is **never written to disk as a whole**. Only a bounded sliding
-window of compressed bytes exists at any moment (RAM buffer / small temp),
-deleted as it's consumed. A corrupt chunk is re-fetched alone via HTTP Range
-(server must support Range — verified at handshake; if not, fail loudly
-before downloading anything).
+**Parallel, not sequential:** chunk files are independent, so the downloader
+fetches a window of N chunks ahead with concurrent connections (saturates
+gigabit fiber — the old "single connection" limit is gone) while extraction
+consumes them strictly in order. The window bounds disk: only N chunks exist
+on disk at any moment, plus the game files written so far.
 
-Re-running the same command after an interruption resumes from the state
-file (consumed offset) + temp files — never restarts from zero.
+**Resume is trivial:** a chunk file that exists and matches its manifest hash
+is done — a re-run only fetches what's missing. No state file, no Range
+dance, no restart-from-zero, ever. A corrupt chunk (hash mismatch) is
+re-fetched up to 3 tries, then a loud failure naming the chunk — never
+silently written.
 
-**Why not aria2:** evaluated and rejected for the download path — aria2
-assembles downloads into a file on disk, which would recreate the 2x-space
-problem. Its chunk-checksum concept (from Metalink) is the inspiration for
-our per-chunk SHA-256 verification, implemented inside our own stream loop.
-aria2 remains a candidate only for v2 parallel prefetch, where consumed
-chunk files would be deleted as they're processed.
+**Server needs:** plain static HTTP(S) file serving. No Range support
+required for `.acpkg` (each chunk is its own URL). Chunk URLs are relative
+to the manifest URL.
 
-### 2.4 Known limitation: multi-part solid RAR
-
-The ideal "click link → just works" hits a hard wall with FitGirl-style
-multi-part RAR repacks (`part1.rar … partN.rar`): in solid archives, file
-data spans volumes, so no tool on earth can stream them — not us, not
-anyone. Format law, not a design choice.
-
-Those require: download all parts normally (2x space, once) → `repack` the
-parts into one `.acpkg` → from then on it streams with 1x space forever.
-The bridge can still help: when it sees `part1.rar`, it offers to capture
-all part URLs in one go and queues the repack after the last part lands.
+**Why not aria2:** evaluated and rejected — aria2 assembles downloads into a
+file on disk, which would recreate the 2x-space problem. Its chunk-checksum
+concept (from Metalink) is the inspiration for our per-chunk SHA-256
+verification, implemented in our own fetch loop.
 
 ### 2.3 Firefox bridge
 
@@ -102,60 +111,86 @@ Firefox offers no blocking cancel) → native message (4-byte length-prefixed
 JSON via registered native messaging host, HKCU registry) → host spawns the
 terminal chooser with CREATE_NEW_CONSOLE → user picks.
 
+**Terminal chooser (primary flow):** the bridge spawns a visible console
+window (native messaging hosts otherwise run hidden) showing the filename +
+size with two choices: **[1] Download with AntiCompress** (streams, progress
+bar in the same terminal) or **[2] Normal download** (CLI exits quietly; the
+extension restarts the download in Firefox via `browser.downloads.download()`,
+like nothing happened). The CLI *is* the dialog — no browser tabs, no extra
+clicks.
+
 **Restart-loop guard:** when the user picks "Normal", the extension
-restarts the download with `browser.downloads.download(url)`; the onCreated
-handler keeps a set of pending-restart URLs and skips them, so the restart
-never re-triggers the chooser.
+restarts the download; the onCreated handler keeps a set of pending-restart
+URLs and skips them, so the restart never re-triggers the chooser.
 
 **blob:/data: URLs** (in-page generated downloads) can't be streamed by the
 CLI → the chooser offers "Normal download" only.
 
-**Terminal chooser (primary flow):** when a download is intercepted, the
-bridge spawns a visible console window (`CREATE_NEW_CONSOLE` — native
-messaging hosts otherwise run hidden) showing the filename + size with two
-choices: **[1] Download with AntiCompress** (streams, progress bar in the
-same terminal) or **[2] Normal download** (CLI exits quietly; the extension
-restarts the download in Firefox via `browser.downloads.download()`, like
-nothing happened). The CLI *is* the dialog — no browser tabs, no extra
-clicks.
+**Multi-part capture:** when a `.part01.rar`-style URL is intercepted, the
+chooser offers to capture the whole part sequence (part URLs are usually
+predictable) and queues `repack` after the last part lands.
+
+### 2.4 Known limitation: solid RAR itself
+
+The ideal "click link → stream the FitGirl RAR" is impossible — solid
+archives interleave file data across volumes and no tool (present or
+otherwise) extracts them from a partial download. Format law.
+
+**But the chunk-folder design turns it into a speed bump, not a wall:**
+the 120GB-game / 90GB-archive / 140GB-free case now works, because every
+copy on disk is consumable:
+
+1. **Repack:** 7z streams the solid archive once; chunks land; each part is
+   deleted as 7z passes it → peak ≈ 90GB.
+2. **Extract:** game grows as chunks are consumed; each chunk file deleted
+   after extraction → peak ≈ 120GB.
+3. **Done:** 120GB game, 20GB free — the Steam math.
+
+The only case that still needs 2x: an archive that is both solid AND
+single-file (no parts to delete incrementally) on a disk with no room — then
+repack needs the archive on a second drive / external USB, or a machine with
+space.
 
 ## 3. `.acpkg` format
 
-- **manifest.json** (at the END of the package — it cannot be written
-  first, since chunk compressed sizes are only known after compression;
-  a footer makes it findable): format version, chunk size (1 MiB), total
-  sizes, file list (relative path, size, offset in decompressed stream),
-  per-file SHA-256, per-chunk entries (compressed offset, compressed size,
-  uncompressed size, SHA-256), manifest self-hash. Verified before being
-  trusted. Compressed offsets let the downloader re-fetch a single bad
-  chunk via HTTP Range.
-- **footer** (last 64 bytes): magic, format version, manifest length,
-  manifest SHA-256 — the downloader fetches the manifest with one tail
-  Range request (zip's central directory sits at the end for the same
-  reason).
-- **chunk stream**: fixed 1 MiB decompressed-size chunks, each zstd-compressed
-  with the zstd content-checksum flag enabled (xxHash64 embedded per frame).
+A folder:
 
-No custom hosting, no CDN. A package is a plain file — host it anywhere, keep
-it on a drive, share it.
+```
+out.acpkg/
+  manifest.json      ← format version, chunk size (1 MiB), file list
+                       (relative path, size, offset in decompressed stream),
+                       per-file SHA-256, per-chunk SHA-256, manifest self-hash
+  chunk-000001.zst   ← 1 MiB decompressed each, zstd frame with content
+  chunk-000002.zst      checksum enabled (xxHash64 embedded per frame)
+  ...
+```
+
+- Manifest is a plain file — fetched first, verified first, source of truth.
+- Chunk URLs in the downloader are `manifest_url + "/" + chunk filename`
+  (or relative paths recorded in the manifest — decided at implementation,
+  relative-to-manifest is the default).
+- No footer, no tail-Range trickery: the manifest-at-the-end problem
+  disappears because the manifest is its own file, written last but fetched
+  first.
+- No custom hosting, no CDN. A package is a folder — host it on any static
+  file server, keep it on a drive, share it.
 
 ## 4. Integrity — 5 layers (Steam's mechanism, SHA-256 instead of SHA-1)
 
-1. **Manifest hashes** — downloaded first, verified first, source of truth.
-2. **Per-chunk verification while downloading** — the stream loop verifies
-each chunk's SHA-256 against the manifest the moment its bytes complete,
-before decompressing (Steam's per-chunk validation; we implement it
-ourselves instead of aria2's Metalink equivalent — see 2.2). Bad chunk →
-re-fetch just that chunk via HTTP Range up to 3 tries → then stop with a
-loud error naming the chunk and file. Never silently writes garbage.
+1. **Manifest hashes** — fetched first, verified first, source of truth.
+2. **Per-chunk verification** — every chunk file's SHA-256 is checked
+   against the manifest before it is decompressed (Steam's per-chunk
+   validation). Bad chunk → re-fetch that chunk file up to 3 tries → then a
+   loud error naming the chunk. Never silently writes garbage.
 3. **zstd frame checksums** — decompression-time detection of decompressor
    bugs or disk glitches.
-4. **Atomic writes** — files assembled under `.acpart` temp names, verified
-   against manifest per-file SHA-256, then `os.replace()` into the final
-   name. A crash leaves temp files + clean resume, never a half-written file
-   that claims to be finished.
-5. **Repack-time source verification** — 7-Zip CRC checks validate the source
-   archive during repack; corrupt source refuses to produce a package.
+4. **Atomic writes** — game files assembled under `.acpart` temp names,
+   verified against manifest per-file SHA-256, then `os.replace()` into the
+   final name. A crash leaves chunk files + temp files + a clean resume —
+   never a half-written file that claims to be finished.
+5. **Repack-time source verification** — 7-Zip CRC checks validate the
+   source archive during repack; corrupt source refuses to produce a
+   package.
 
 Plus: free-space check upfront (final size + buffer), fail fast before any
 download.
@@ -166,33 +201,34 @@ If the tool says "done", files are bit-identical to what the repacker read.
 
 - **Python 3** — glue only; the C libraries do the real work. User-readable,
   user-hackable.
-- **`httpx`** (or `requests`) — sequential streaming download with HTTP Range
-  support for resume and single-chunk re-fetch.
-- **7-Zip CLI** (`7z.exe`) — reads RAR/7z/zip sources during repack (streams
-  per-file in order, CRC verification built in).
+- **`httpx`** (or `requests`) — chunk downloads over plain static HTTP(S);
+  a small thread pool provides the parallel fetch window.
+- **7-Zip CLI** (`7z.exe`) — reads RAR/7z/zip sources during repack
+  (single-pass `-so` stream, CRC verification built in).
 - **`zstandard`** Python package (C bindings) — chunk compression with
   content checksums.
 - Windows; `7z.exe` is a documented prerequisite (downloadable from
-  7-zip.org). No aria2 dependency for v1 (see 2.2).
+  7-zip.org). No aria2 dependency.
 
 ## 6. Error handling
 
 - Insufficient free space → refuse before download, show "need X, have Y".
-- Chunk hash mismatch → retry that chunk via Range (3 tries) → loud failure
-  with chunk/file identity if persistent.
+- Chunk hash mismatch → re-fetch that chunk file (3 tries) → loud failure
+  with chunk identity if persistent.
 - Decompression checksum failure → same loud-failure path.
 - Corrupt source at repack → refuse to emit package.
-- Resume state lives in a small state file (consumed offset) + `.acpart` temp
-  files; a re-run continues, never restarts from zero. If the server lacks
-  Range support, fail loudly at handshake (before downloading anything).
+- Resume: chunk files present + hash-verified = done; missing = fetched.
+  Never restarts from zero, no state file.
+- Watchdog deletion failures → never fatal, degrade gracefully.
 
 ## 7. Testing
 
 1. **Round-trip**: repack a mixed folder (random bytes + large binaries) →
    serve package over local HTTP → `dl` it → every file SHA-256-identical.
-2. **Corrupt-chunk injection**: flip bytes mid-package → downloader detects,
-   re-fetches that chunk, still produces correct files.
-3. **Kill-resume**: kill mid-download → resume → identical result.
+2. **Corrupt-chunk injection**: flip bytes in a chunk file → downloader
+   detects, re-fetches that chunk, still produces correct files.
+3. **Kill-resume**: kill mid-download → resume → identical result, only
+   missing chunks fetched.
 4. **Space-gate**: run with insufficient free space → fails before download.
 5. **Manifest tamper**: alter manifest → refused.
 6. **Repack CRC gate**: corrupt source archive → repack refuses.
@@ -200,6 +236,10 @@ If the tool says "done", files are bit-identical to what the repacker read.
    extraction order → repack refuses (no bad package).
 8. **Restart guard**: simulate "Normal" restart → onCreated skips it, no
    chooser loop.
+9. **Part-deletion**: repack a multi-part fixture → parts deleted as 7z
+   passes them; peak disk stays ≈ source size.
+10. **Parallel window**: N-connection fetch → chunks extracted in order,
+    game files identical to round-trip baseline.
 
 ## 8. Scope notes
 

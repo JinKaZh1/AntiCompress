@@ -9,8 +9,13 @@ function ask(url, filename, size) {
     if (msg && msg.action === "normal") {
       RESTART_URLS.add(url);
       browser.downloads.download({ url }).catch(() => {});
+      port.disconnect();
+    } else if (msg && msg.action === "finished") {
+      port.disconnect();
     }
-    port.disconnect();
+    // "stream": keep the port open. The native host stays alive until the
+    // download finishes; disconnecting early makes Firefox tear down the
+    // host's process tree, killing the still-running download.
   });
   port.onDisconnect.addListener(() => {
     if (port.error) {

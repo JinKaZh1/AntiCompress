@@ -28,17 +28,17 @@ def send_message(msg: dict) -> None:
     sys.stdout.buffer.flush()
 
 
-def spawn_chooser(msg: dict) -> Path:
+def spawn_chooser(msg: dict) -> tuple[subprocess.Popen, Path]:
     fd, path = tempfile.mkstemp(prefix="anticompress-", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(msg, f)
     result_path = Path(path + ".result")
     args = [sys.executable, "-m", "anticompress.choose", path, str(result_path)]
     if sys.platform == "win32":
-        subprocess.Popen(args, creationflags=CREATE_NEW_CONSOLE)
+        proc = subprocess.Popen(args, creationflags=CREATE_NEW_CONSOLE)
     else:
-        subprocess.Popen(args)
-    return result_path
+        proc = subprocess.Popen(args)
+    return proc, result_path
 
 
 def wait_for_choice(result_path: Path, timeout: float = RESPONSE_TIMEOUT) -> str:
@@ -53,13 +53,29 @@ def wait_for_choice(result_path: Path, timeout: float = RESPONSE_TIMEOUT) -> str
     return "normal"
 
 
+def _safe_send(msg: dict) -> None:
+    try:
+        send_message(msg)
+    except Exception:
+        pass  # Firefox already closed the channel — nothing to tell it
+
+
 def main() -> None:
     msg = read_message()
     if not msg or msg.get("type") != "download":
-        send_message({"action": "normal"})
+        _safe_send({"action": "normal"})
         return
-    result_path = spawn_chooser(msg)
-    send_message({"action": wait_for_choice(result_path)})
+    proc, result_path = spawn_chooser(msg)
+    _safe_send({"action": wait_for_choice(result_path)})
+    # Stay alive until the chooser finishes. Firefox tears down the native
+    # host's process tree when the host exits — which would kill a still-
+    # running download. The "finished" message lets the extension close
+    # the port cleanly afterwards.
+    try:
+        proc.wait()
+    except Exception:
+        pass
+    _safe_send({"action": "finished"})
 
 
 if __name__ == "__main__":

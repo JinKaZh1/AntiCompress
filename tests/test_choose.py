@@ -80,6 +80,10 @@ def test_attach_console_fallback_on_error(monkeypatch):
     assert type(choose.sys.stdin) is FakePipe
 
 
+def test_fetch_size_heads_content_length(serve_zip):
+    assert choose._fetch_size(serve_zip) != ""
+
+
 def test_choice_rar_url_auto_normal(tmp_path, monkeypatch):
     """RAR/7z links can't stream — chooser writes "normal" without prompting."""
     mp, rp = _write_msg(tmp_path, _msg("http://x/game.part01.rar", filename="game.part01.rar"))

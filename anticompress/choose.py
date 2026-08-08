@@ -8,6 +8,8 @@ import time
 import traceback
 from pathlib import Path
 
+import httpx
+
 _LOG_PATH = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")) / "anticompress" / "chooser.log"
 
 
@@ -18,6 +20,22 @@ def _log(line: str) -> None:
             f.write(f"{time.strftime('%H:%M:%S')} {line}\n")
     except OSError:
         pass  # logging must never break the chooser
+
+
+def _fetch_size(url: str) -> str:
+    """Best-effort HEAD to learn the real size (Firefox often reports -1)."""
+    try:
+        with httpx.Client(
+            follow_redirects=True, timeout=httpx.Timeout(connect=4, read=4, write=4, pool=4)
+        ) as client:
+            r = client.head(url)
+            if r.status_code == 200:
+                total = int(r.headers.get("content-length") or 0)
+                if total > 0:
+                    return f"{total / 1e9:.2f} GB"
+    except Exception:
+        pass
+    return ""
 
 
 def _fmt_size(size: int) -> str:
@@ -86,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
         url = msg.get("url", "")
         filename = Path(msg.get("filename") or "download").name
         size = _fmt_size(msg.get("size") or 0)
-        _log(f"url={url} filename={filename}")
+        if "unknown" in size:
+            fetched = _fetch_size(url)
+            if fetched:
+                size = fetched
+        _log(f"url={url} filename={filename} size={size}")
 
         print(_box([
             "AntiCompress",

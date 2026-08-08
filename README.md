@@ -24,7 +24,7 @@ ever need room for the game itself (60 GB, not 110 GB).
 
 That's it. That's the whole thing.
 
-**Also works without Firefox:** `anticompress dl https://link-to-file.zip -o D:\Games\MyGame`
+**Also works without Firefox:** `anticompress dl https://link-to-file.zip -o "D:\Games\MyGame"`
 
 **Not sure about something?** Press `Ctrl+C` to pause anything. Close the
 window to cancel. Re-click the same link later and it continues where it

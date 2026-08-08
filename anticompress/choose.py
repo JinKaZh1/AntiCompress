@@ -126,10 +126,9 @@ def main(argv: list[str] | None = None) -> int:
             "",
             "  " + style.bold(filename) + "   " + style.yellow(size),
             "",
-            "  " + style.bold(style.accent("[1]")) + "  " + style.bold("Stream download")
+            "  " + style.bold(style.accent("Enter")) + "  " + style.bold("Stream download")
             + style.muted("   \u00b7  1\u00d7 disk space, verified"),
-            "  " + style.bold(style.accent("[2]")) + "  " + style.bold("Normal download")
-            + style.muted("   \u00b7  Firefox saves it"),
+            "  " + style.bold("n") + "  " + style.muted("Normal download (Firefox saves it)"),
             "",
             "  " + style.muted("Ctrl+C to pause  \u00b7  resumes where it left off"),
         ]
@@ -156,9 +155,9 @@ def main(argv: list[str] | None = None) -> int:
             _wait_close()
             return 0
 
-        choice = input(style.bold(style.accent("Choice [1/2]: "))).strip()
+        choice = input(style.bold(style.accent("Enter") + " to stream, n for normal: ")).strip().lower()
 
-        if choice != "1":
+        if choice in ("n", "2", "no"):
             _log("choice: normal")
             _write_result(result_path, "normal")
             return 0

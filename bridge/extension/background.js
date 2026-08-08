@@ -3,9 +3,10 @@
 const RESTART_URLS = new Set();
 const HOST = "anticompress";
 
-// Only archives need AntiCompress — everything else downloads normally.
-const ARCHIVE_EXT = /\.(zip|rar|7z|tar|gz|zst|xz|bz2|tzst|iso|001)$/i;
-const PASS_EXT = /\.(mp3|mp4|mkv|avi|mov|wav|flac|webm|jpg|jpeg|png|gif|webp|pdf|txt|doc|docx|xls|xlsx|ppt|pptx|exe|msi|apk|dmg|epub)$/i;
+// Only streamable archives get the chooser — everything else (including
+// rar/7z, which cannot stream) downloads normally, zero interruption.
+const ARCHIVE_EXT = /\.(zip|tar|gz|zst|xz|bz2|tzst|iso|acpkg)$/i;
+const PASS_EXT = /\.(rar|7z|001|mp3|mp4|mkv|avi|mov|wav|flac|webm|jpg|jpeg|png|gif|webp|pdf|txt|doc|docx|xls|xlsx|ppt|pptx|exe|msi|apk|dmg|epub)$/i;
 
 function classify(name) {
   if (ARCHIVE_EXT.test(name)) return "archive";

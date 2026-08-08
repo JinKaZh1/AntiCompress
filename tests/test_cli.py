@@ -107,10 +107,31 @@ def test_dlproxy_style_server_streams_zip(tmp_path):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        url = f"http://127.0.0.1:{httpd.server_port}/game.zip"
+        url = f"http://127.0.0.1:{httpd.server_port}/download"  # no extension, like dlproxy
         dest = tmp_path / "dest"
         main(["dl", url, "-o", str(dest)])
         assert_trees_identical(FILES, dest)
+    finally:
+        httpd.shutdown()
+
+
+def test_dlproxy_rar_magic_refused(tmp_path):
+    """Extension-less URL serving RAR data → refused loudly, not misdetected."""
+    class _RarHandler(_QuietHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            self.wfile.write(b"Rar!\x1a\x07\x01\x00" + b"x" * 1024)
+
+    handler = functools.partial(_RarHandler, directory=str(tmp_path))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_port}/whatever"
+        with pytest.raises(SystemExit):
+            main(["dl", url, "-o", str(tmp_path / "dest")])
     finally:
         httpd.shutdown()
 

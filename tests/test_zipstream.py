@@ -94,7 +94,7 @@ def test_stream_tar_gz(serve, tmp_path):
 
 
 def test_rar_and_7z_refused(serve, tmp_path):
-    url, httpd = serve(b"not really", ".rar")
+    url, httpd = serve(b"Rar!\x1a\x07\x01\x00" + b"x" * 100, ".rar")
     try:
         with pytest.raises(ValueError, match="repack"):
             stream_archive(url, tmp_path / "dest")

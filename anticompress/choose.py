@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         msg = json.loads(Path(msg_path).read_text(encoding="utf-8"))
         url = msg.get("url", "")
-        filename = msg.get("filename") or "download"
+        filename = Path(msg.get("filename") or "download").name
         size = _fmt_size(msg.get("size") or 0)
         _log(f"url={url} filename={filename}")
 

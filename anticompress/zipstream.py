@@ -17,6 +17,8 @@ _ZIP_LOCAL = struct.Struct("<HHHHHIIIHH")  # after 4-byte sig: ver, flags, metho
 _DESC = struct.Struct("<IIII")  # sig, crc, csize, usize
 _DESC64 = struct.Struct("<IIQQ")  # sig, crc, csize64, usize64
 
+_TIMEOUT = httpx.Timeout(connect=30, read=120, write=60, pool=30)
+
 
 def _safe_path(dest_dir: Path, name: str) -> Path:
     name = name.replace("\\", "/")
@@ -25,6 +27,32 @@ def _safe_path(dest_dir: Path, name: str) -> Path:
     p = dest_dir / name
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _sniff(head: bytes) -> str | None:
+    """Identify the archive format from magic bytes (URL extensions lie)."""
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        return "zip"
+    if head[257:262] == b"ustar":
+        return "tar"
+    if head.startswith(b"\x1f\x8b"):
+        return "gzip"
+    if head.startswith(b"\xfd7zXZ\x00"):
+        return "xz"
+    if head.startswith(b"BZh"):
+        return "bz2"
+    if head.startswith(b"\x28\xb5\x2f\xfd"):
+        return "zstd"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
+    if head.startswith(b"Rar!\x1a\x07"):
+        return "rar"
+    return None
+
+
+def _prepend(first: bytes, it: Iterator[bytes]) -> Iterator[bytes]:
+    yield first
+    yield from it
 
 
 class _BufferedBlocks:
@@ -148,7 +176,7 @@ def _stream_zip_blocks(blocks: Iterator[bytes], dest_dir: Path, progress: Progre
 
 def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(connect=30, read=120, write=60, pool=30)) as client:
+    with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
             _stream_zip_blocks(r.iter_bytes(1 << 16), dest_dir, progress)
@@ -174,42 +202,59 @@ class _IterStream:
         return out
 
 
+def _stream_tar_blocks(
+    blocks: Iterator[bytes], dest_dir: Path, progress: Progress, is_zstd: bool = False
+) -> None:
+    fobj: object = _IterStream(blocks)
+    if is_zstd:
+        dctx = zstandard.ZstdDecompressor()
+        fobj = dctx.stream_reader(fobj)  # type: ignore[arg-type]
+    mode = "r|" if is_zstd else "r|*"
+    with tarfile.open(fileobj=fobj, mode=mode) as tf:  # type: ignore[arg-type]
+        total = 0
+        for member in tf:
+            if member.isfile():
+                out = _safe_path(dest_dir, member.name)
+                src = tf.extractfile(member)
+                with src, out.open("wb") as dst:
+                    while True:
+                        block = src.read(1 << 16)
+                        if not block:
+                            break
+                        dst.write(block)
+                        total += len(block)
+                if progress:
+                    progress(total)
+            elif member.isdir():
+                _safe_path(dest_dir, member.name).mkdir(parents=True, exist_ok=True)
+
+
 def stream_tar(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(connect=30, read=120, write=60, pool=30)) as client:
+    with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         with client.stream("GET", url) as r:
             r.raise_for_status()
-            fobj: object = _IterStream(r.iter_bytes(1 << 16))
-            if url.lower().endswith((".tar.zst", ".tzst")):
-                dctx = zstandard.ZstdDecompressor()
-                fobj = dctx.stream_reader(fobj)  # type: ignore[arg-type]
-            with tarfile.open(fileobj=fobj, mode="r|*") as tf:  # type: ignore[arg-type]
-                total = 0
-                for member in tf:
-                    if member.isfile():
-                        out = _safe_path(dest_dir, member.name)
-                        src = tf.extractfile(member)
-                        with src, out.open("wb") as dst:
-                            while True:
-                                block = src.read(1 << 16)
-                                if not block:
-                                    break
-                                dst.write(block)
-                                total += len(block)
-                        if progress:
-                            progress(total)
-                    elif member.isdir():
-                        _safe_path(dest_dir, member.name).mkdir(parents=True, exist_ok=True)
+            _stream_tar_blocks(r.iter_bytes(1 << 16), dest_dir, progress)
 
 
 def stream_archive(url: str, dest_dir: Path, progress: Progress = None) -> None:
-    """Dispatch by extension. rar/7z refuse loudly (solid archives can't stream)."""
-    low = url.lower().split("?")[0]
-    if low.endswith(".zip"):
-        stream_zip(url, dest_dir, progress)
-    elif low.endswith((".tar", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tzst")):
-        stream_tar(url, dest_dir, progress)
-    elif low.endswith((".rar", ".7z")):
-        raise ValueError("rar/7z cannot stream — run `anticompress repack` first")
-    else:
-        raise ValueError(f"unsupported archive format: {low}")
+    """Stream-extract whatever the URL actually IS (magic bytes, not the URL
+    extension — dlproxy-style links carry no extension). rar/7z refuse loudly."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
+        with client.stream("GET", url) as r:
+            r.raise_for_status()
+            it = r.iter_bytes(1 << 16)
+            first = next(it, b"")
+            kind = _sniff(first)
+            blocks = _prepend(first, it)
+            if kind == "zip":
+                _stream_zip_blocks(blocks, dest_dir, progress)
+            elif kind in ("tar", "gzip", "xz", "bz2"):
+                _stream_tar_blocks(blocks, dest_dir, progress)
+            elif kind == "zstd":
+                _stream_tar_blocks(blocks, dest_dir, progress, is_zstd=True)
+            elif kind in ("rar", "7z"):
+                raise ValueError("rar/7z cannot stream — run `anticompress repack` first")
+            else:
+                raise ValueError(f"unsupported archive format: {url}")

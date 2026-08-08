@@ -1,7 +1,7 @@
 # AntiCompress
 
 Steam-style streaming download + decompression for Windows. The archive never
-exists on disk alongside its content — **you only ever need room for the
+exists on disk alongside its content **you only ever need room for the
 final game, never the game + its archive.**
 
 ## Install

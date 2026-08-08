@@ -156,8 +156,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         default_dest = str(Path.home() / "Downloads" / Path(filename).stem)
-        dest = input(f"Destination folder [{default_dest}]: ").strip() or default_dest
+        dest = (input(f"Destination folder [{default_dest}]: ").strip().strip('"') or default_dest)
         dest_path = Path(dest)
+        if not dest_path.is_absolute():
+            # the chooser's working dir is unpredictable — resolve relative
+            # paths against the default's parent (Downloads)
+            dest_path = Path(default_dest).parent / dest_path
+        dest_path = dest_path.resolve()
         dest_path.mkdir(parents=True, exist_ok=True)
         _write_result(result_path, "stream")
         _log(f"choice: stream dest={dest_path}")

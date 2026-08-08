@@ -93,6 +93,30 @@ def test_choice_rar_url_auto_normal(tmp_path, monkeypatch):
     assert json.loads(rp.read_text()) == {"action": "normal"}
 
 
+def test_choice_relative_dest_resolves_under_downloads(tmp_path, monkeypatch, serve_zip):
+    """A relative folder name lands under Downloads, not the chooser's CWD."""
+    mp, rp = _write_msg(tmp_path, _msg(serve_zip))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    answers = iter(["1", "mygame"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
+    assert choose_main([str(mp), str(rp)]) == 0
+    assert (tmp_path / "Downloads" / "mygame" / "game.exe").is_file()
+
+
+def test_choice_quoted_dest_strips_quotes(tmp_path, monkeypatch, serve_zip):
+    """Pasting a folder from Explorer adds quotes — they must not become part
+    of the folder name."""
+    mp, rp = _write_msg(tmp_path, _msg(serve_zip))
+    dest = tmp_path / "quoted dest"
+    answers = iter(["1", f'"{dest}"'])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
+    assert choose_main([str(mp), str(rp)]) == 0
+    assert (dest / "game.exe").is_file()
+    assert not (tmp_path / '"quoted dest"').exists()
+
+
 def test_choice_stream_downloads_to_dest(tmp_path, monkeypatch, serve_zip):
     mp, rp = _write_msg(tmp_path, _msg(serve_zip))
     dest = tmp_path / "out"

@@ -49,6 +49,15 @@ def test_choice_normal_writes_result(tmp_path, monkeypatch):
     assert json.loads(rp.read_text()) == {"action": "normal"}
 
 
+def test_choice_rar_url_auto_normal(tmp_path, monkeypatch):
+    """RAR/7z links can't stream — chooser writes "normal" without prompting."""
+    mp, rp = _write_msg(tmp_path, _msg("http://x/game.part01.rar", filename="game.part01.rar"))
+    monkeypatch.setattr("builtins.input", lambda *a: "1")  # must NOT be asked
+    monkeypatch.setattr("anticompress.choose._wait_close", lambda: None)
+    assert choose_main([str(mp), str(rp)]) == 0
+    assert json.loads(rp.read_text()) == {"action": "normal"}
+
+
 def test_choice_stream_downloads_to_dest(tmp_path, monkeypatch, serve_zip):
     mp, rp = _write_msg(tmp_path, _msg(serve_zip))
     dest = tmp_path / "out"

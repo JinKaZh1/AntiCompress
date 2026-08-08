@@ -35,6 +35,7 @@ class _Progress:
         self.total = total
         self.start = None
         self.last = 0
+        self.samples: list[tuple[float, int]] = []  # (time, bytes) for windowed speed
 
     def set_total(self, total: int) -> None:
         self.total = total
@@ -43,11 +44,18 @@ class _Progress:
         now = time.monotonic()
         if self.start is None:
             self.start = now  # measure from the first byte, not process start
+        self.samples.append((now, done))
+        cutoff = now - 3.0
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.pop(0)
         if now - self.last < 0.2 and done < self.total:
             return
         self.last = now
-        elapsed = max(now - self.start, 1e-6)
-        speed = done / elapsed / 1e6
+        if len(self.samples) >= 2:
+            t0, d0 = self.samples[0]
+            speed = (done - d0) / max(now - t0, 1e-6) / 1e6  # last 3s, not lifetime avg
+        else:
+            speed = done / max(now - self.start, 1e-6) / 1e6
         done_gb = done / 1e9
         if self.total:
             pct = done / self.total * 100

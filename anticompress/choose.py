@@ -82,6 +82,19 @@ def _box(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+def _redraw(lines: list[str]) -> None:
+    """Replace the box already on screen with a new one (ANSI up + clear)."""
+    try:
+        box = _box(lines)
+        printed = box.count("\n") + 2  # box lines + the trailing blank
+        sys.stdout.write(f"\x1b[{printed}A\x1b[J")
+        print(box)
+        print()
+        sys.stdout.flush()
+    except Exception:
+        pass  # no VT: old box stays, acceptable
+
+
 def _wait_close() -> None:
     try:
         input("\nPress Enter to close this window.")
@@ -104,21 +117,27 @@ def main(argv: list[str] | None = None) -> int:
         url = msg.get("url", "")
         filename = Path(msg.get("filename") or "download").name
         size = _fmt_size(msg.get("size") or 0)
-        if "unknown" in size:
-            fetched = _fetch_size(url)
-            if fetched:
-                size = fetched
-        _log(f"url={url} filename={filename} size={size}")
-
-        print(_box([
+        box_lines = [
             "AntiCompress",
             "",
             f"{filename}  ({size})",
             "",
             "[1] Download with AntiCompress (stream)",
             "[2] Normal download (Firefox saves it)",
-        ]))
-        print()
+        ]
+        if "unknown" in size:
+            # show the box instantly, then fill the size in when HEAD answers
+            print(_box(box_lines))
+            print()
+            fetched = _fetch_size(url)
+            if fetched:
+                size = fetched
+                box_lines[2] = f"{filename}  ({size})"
+                _redraw(box_lines)
+        else:
+            print(_box(box_lines))
+            print()
+        _log(f"url={url} filename={filename} size={size}")
 
         if _looks_like_rar7z(url):
             _log("rar/7z detected -> normal")
@@ -129,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
             _wait_close()
             return 0
 
+        print("[1] Download with AntiCompress (stream)")
+        print("[2] Normal download (Firefox saves it)")
+        print()
         print("[1] Download with AntiCompress (stream)")
         print("[2] Normal download (Firefox saves it)")
         print()

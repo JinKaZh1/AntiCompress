@@ -58,16 +58,17 @@ class _Progress:
             speed = done / max(now - self.start, 1e-6) / 1e6
         done_gb = done / 1e9
         if self.total:
-            pct = done / self.total * 100
+            pct = min(done / self.total * 100, 100.0)
             filled = int(pct / 100 * 20)
             bar = "\u2588" * filled + "\u2591" * (20 - filled)
             line = (
-                f"\r{self.prefix} [{bar}] {pct:5.1f}%  "
+                f"{self.prefix} [{bar}] {pct:5.1f}%  "
                 f"{done_gb:5.2f}/{self.total / 1e9:5.2f} GB  {speed:6.1f} MB/s"
             )
         else:
-            line = f"\r{self.prefix} {done_gb:5.2f} GB  {speed:6.1f} MB/s"
-        print(line, end="", flush=True)
+            line = f"{self.prefix} {done_gb:5.2f} GB  {speed:6.1f} MB/s"
+        # fixed width + clear-to-end: a shorter line can never leave tail residue
+        print("\r" + line.ljust(80) + "\x1b[K", end="", flush=True)
 
 
 def _progress(prefix: str, total: int) -> _Progress:

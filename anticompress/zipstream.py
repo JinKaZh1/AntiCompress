@@ -253,6 +253,15 @@ def _stream_zip_blocks(
             _save_resume(state_path, {"total": total, "next_offset": b.consumed})
 
 
+def _process_zip_response(
+    r, dest_dir: Path, state_path: Path, total: int, progress: Progress, base: int
+) -> None:
+    if total and progress is not None and hasattr(progress, "set_total"):
+        progress.set_total(total)
+    blocks = _counted(r.iter_bytes(1 << 16), _offset_progress(progress, base))
+    _stream_zip_blocks(blocks, dest_dir, state_path=state_path, total=total)
+
+
 def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     state_path = dest_dir / RESUME_NAME
@@ -263,15 +272,21 @@ def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
             head = None
         total = int(head.headers.get("content-length") or 0) if head is not None else 0
         resume = _load_resume(state_path, total) if total else None
-        headers = {"Range": f"bytes={resume['next_offset']}-"} if resume else None
         if resume:
             print(f"Resuming at {resume['next_offset'] / total * 100:.1f}% ...")
-        with client.stream("GET", url, headers=headers) as r:
+            with client.stream(
+                "GET", url, headers={"Range": f"bytes={resume['next_offset']}-"}
+            ) as r:
+                r.raise_for_status()
+                if r.status_code == 206:  # server honors resume
+                    _process_zip_response(r, dest_dir, state_path, total, progress, resume["next_offset"])
+                    return
+            # 200 without 206: server ignored Range — cannot resume, start over
+            state_path.unlink(missing_ok=True)
+            print("Server does not support resume — starting over.")
+        with client.stream("GET", url) as r:
             r.raise_for_status()
-            if total and progress is not None and hasattr(progress, "set_total"):
-                progress.set_total(total)
-            blocks = _counted(r.iter_bytes(1 << 16), _offset_progress(progress, resume["next_offset"] if resume else 0))
-            _stream_zip_blocks(blocks, dest_dir, state_path=state_path, total=total)
+            _process_zip_response(r, dest_dir, state_path, total, progress, 0)
 
 
 class _IterStream:

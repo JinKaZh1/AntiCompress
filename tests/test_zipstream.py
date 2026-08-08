@@ -1,4 +1,5 @@
 import binascii
+from pathlib import Path
 import json
 import functools
 import io
@@ -94,30 +95,82 @@ def test_stream_zip_zstd_method93(serve, tmp_path):
         httpd.shutdown()
 
 
+class _RangeHandler(SimpleHTTPRequestHandler):
+    """Honors Range requests like real download servers (206)."""
+    requests: list = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_HEAD(self):
+        data = (Path(self.directory) / self.path.lstrip("/")).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+
+    def do_GET(self):
+        type(self).requests.append(self.headers.get("Range"))
+        data = (Path(self.directory) / self.path.lstrip("/")).read_bytes()
+        if "Range" in self.headers:
+            start = int(self.headers["Range"].split("=")[1].split("-")[0])
+            body = data[start:]
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{start + len(body) - 1}/{len(data)}")
+        else:
+            body = data
+            self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 def test_stream_zip_resume_from_entry_boundary(serve, tmp_path):
     """Closing the console at 80% then re-running must continue from the last
-    completed entry (Range request), not restart."""
+    completed entry via a Range request — not restart."""
     data = _zip_bytes()
     total = len(data)
-    # find entry 2's local header offset via the central directory
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        names = sorted(zf.namelist())
+        names = zf.namelist()  # write order = on-disk order
         assert len(names) >= 3
         resume_offset = zf.getinfo(names[1]).header_offset
-    url, httpd = serve(data, ".zip")
+
+    f = tmp_path / "archive.zip"
+    f.write_bytes(data)
+    _RangeHandler.requests = []
+    handler = functools.partial(_RangeHandler, directory=str(tmp_path))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
     try:
+        url = f"http://127.0.0.1:{httpd.server_port}/archive.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
-        # entry 0 was already extracted before the "crash"
         pre = dest / names[0]
         pre.parent.mkdir(parents=True, exist_ok=True)
-        pre.write_bytes(FILES[names[0]])
-        # simulate the crash state file (written after entry 0 completed)
+        pre.write_bytes(FILES[names[0]])  # extracted before the "crash"
         state = dest / ".anticompress-resume.json"
         state.write_text(json.dumps({"total": total, "next_offset": resume_offset}))
         stream_zip(url, dest)
         assert_trees_identical(FILES, dest)
         assert not state.exists()  # state cleared on completion
+        assert any(rg for rg in _RangeHandler.requests), "resume should have used Range"
+    finally:
+        httpd.shutdown()
+
+
+def test_stream_zip_resume_ignored_range_restarts(serve, tmp_path):
+    """A server that ignores Range (returns 200) must restart clean — no
+    double-counted progress, no stale state."""
+    data = _zip_bytes()
+    url, httpd = serve(data, ".zip")  # plain handler: ignores Range
+    try:
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        state = dest / ".anticompress-resume.json"
+        state.write_text(json.dumps({"total": len(data), "next_offset": 500}))
+        stream_zip(url, dest)
+        assert_trees_identical(FILES, dest)  # full fresh download
+        assert not state.exists()
     finally:
         httpd.shutdown()
 

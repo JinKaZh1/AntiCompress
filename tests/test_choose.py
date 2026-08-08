@@ -1,5 +1,6 @@
 import functools
 import json
+import sys
 import threading
 import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import anticompress.choose as choose
 from anticompress.choose import main as choose_main
 from tests.helpers import assert_trees_identical
 
@@ -47,6 +49,35 @@ def test_choice_normal_writes_result(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "2")
     assert choose_main([str(mp), str(rp)]) == 0
     assert json.loads(rp.read_text()) == {"action": "normal"}
+
+
+def test_attach_console_skips_when_tty(monkeypatch):
+    class FakeTty:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", FakeTty())
+
+    def boom(*a, **k):
+        raise AssertionError("must not open console when stdin is a tty")
+
+    monkeypatch.setattr("builtins.open", boom)
+    choose._attach_console()  # no exception
+
+
+def test_attach_console_fallback_on_error(monkeypatch):
+    class FakePipe:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(sys, "stdin", FakePipe())
+
+    def boom(*a, **k):
+        raise OSError
+
+    monkeypatch.setattr("builtins.open", boom)
+    choose._attach_console()  # no exception, stdio untouched
+    assert type(choose.sys.stdin) is FakePipe
 
 
 def test_choice_rar_url_auto_normal(tmp_path, monkeypatch):

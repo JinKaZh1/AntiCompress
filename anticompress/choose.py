@@ -17,6 +17,30 @@ def _write_result(result_path: str, action: str) -> None:
     Path(result_path).write_text(json.dumps({"action": action}), encoding="utf-8")
 
 
+def _attach_console() -> None:
+    """Reattach stdio to the real console.
+
+    When spawned via CREATE_NEW_CONSOLE from a pipe-based parent (Firefox
+    native messaging), stdin can remain the dead parent pipe: input() then
+    EOFs instantly and the window dies. Opening the console devices fixes it.
+    Skipped when stdin is already a tty (normal terminal, test harness).
+    """
+    if sys.platform != "win32" or sys.stdin.isatty():
+        return
+    try:
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return  # no console attached (test harness) — keep inherited stdio
+    try:
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    try:
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
+
 def _wait_close() -> None:
     try:
         input("\nPress Enter to close this window.")
@@ -32,6 +56,7 @@ def _looks_like_rar7z(url: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     msg_path, result_path = argv[0], argv[1]
+    _attach_console()
     try:
         msg = json.loads(Path(msg_path).read_text(encoding="utf-8"))
         url = msg.get("url", "")

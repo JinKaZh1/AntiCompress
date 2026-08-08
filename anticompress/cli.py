@@ -241,6 +241,21 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Frozen (PyInstaller) dispatch: the native host spawns the chooser and
+    # the bridge wrapper spawns the host as "<exe> -m anticompress.X"
+    if len(argv) >= 2 and argv[0] == "-m" and argv[1].startswith("anticompress."):
+        mod = argv[1].split(".")[-1]
+        rest = argv[2:]
+        if mod == "choose":
+            from .choose import main as choose_main
+
+            sys.exit(choose_main(rest))
+        if mod == "native_host":
+            from .native_host import main as host_main
+
+            host_main()
+            return
     _ensure_utf8()
     ap = argparse.ArgumentParser(prog="anticompress", description="Steam-style streaming download + decompress")
     sub = ap.add_subparsers(dest="cmd", required=True)

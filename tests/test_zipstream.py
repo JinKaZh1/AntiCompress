@@ -83,6 +83,19 @@ def _zstd_zip_bytes(name: str, content: bytes) -> bytes:
     return local + comp + central + eocd
 
 
+def test_stream_zip_sfx_stub(serve, tmp_path):
+    """GOG-style self-extracting zip (MZ stub + PK data) must stream — the
+    stub is skipped, entries extract cleanly."""
+    stub = b"MZ" + bytes(range(200)) + b"!This program cannot be run in DOS mode."
+    url, httpd = serve(stub + _zip_bytes(), ".exe")
+    try:
+        dest = tmp_path / "dest"
+        stream_archive(url, dest)
+        assert_trees_identical(FILES, dest)
+    finally:
+        httpd.shutdown()
+
+
 def test_stream_zip_zstd_method93(serve, tmp_path):
     """Zips with Zstandard entries (method 93) must stream-extract."""
     content = bytes((i * 17 + 3) % 256 for i in range(200000))

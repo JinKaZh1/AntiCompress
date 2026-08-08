@@ -33,25 +33,33 @@ def _safe_path(dest_dir: Path, name: str) -> Path:
     return p
 
 
-def _sniff(head: bytes) -> str | None:
-    """Identify the archive format from magic bytes (URL extensions lie)."""
+def _sniff(head: bytes) -> tuple[str, int]:
+    """Identify the archive format from magic bytes (URL extensions lie).
+
+    Returns (kind, stub_len): zip files may carry a self-extracting stub
+    (MZ exe + PK) — we scan for the first local header and skip the stub.
+    """
     if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
-        return "zip"
+        return "zip", 0
     if head[257:262] == b"ustar":
-        return "tar"
+        return "tar", 0
     if head.startswith(b"\x1f\x8b"):
-        return "gzip"
+        return "gzip", 0
     if head.startswith(b"\xfd7zXZ\x00"):
-        return "xz"
+        return "xz", 0
     if head.startswith(b"BZh"):
-        return "bz2"
+        return "bz2", 0
     if head.startswith(b"\x28\xb5\x2f\xfd"):
-        return "zstd"
+        return "zstd", 0
     if head.startswith(b"7z\xbc\xaf\x27\x1c"):
-        return "7z"
+        return "7z", 0
     if head.startswith(b"Rar!\x1a\x07"):
-        return "rar"
-    return None
+        return "rar", 0
+    # SFX / prefixed zips: first local header somewhere in the head
+    idx = head.find(b"PK\x03\x04", 0)
+    if idx > 0:
+        return "zip", idx
+    return None, 0
 
 
 def _prepend(first: bytes, it: Iterator[bytes]) -> Iterator[bytes]:
@@ -138,6 +146,19 @@ def _zip64_sizes(extra: bytes, usize: int, csize: int) -> tuple[int, int]:
     raise ValueError("zip64 sizes missing from extra field")
 
 
+def _drop_prefix(blocks: Iterator[bytes], n: int) -> Iterator[bytes]:
+    """Discard the first n bytes of a block stream (SFX stub)."""
+    remaining = n
+    for block in blocks:
+        if remaining >= len(block):
+            remaining -= len(block)
+            continue
+        yield block[remaining:]
+        remaining = 0
+        yield from blocks
+        return
+
+
 def _counted(blocks: Iterator[bytes], progress: Progress) -> Iterator[bytes]:
     """Report NETWORK bytes consumed (progress is about the download, not
     the decompressed size — otherwise speed/percentage are wrong)."""
@@ -150,7 +171,8 @@ def _counted(blocks: Iterator[bytes], progress: Progress) -> Iterator[bytes]:
 
 
 def _stream_zip_blocks(
-    blocks: Iterator[bytes], dest_dir: Path, state_path: Path | None = None, total: int = 0
+    blocks: Iterator[bytes], dest_dir: Path, state_path: Path | None = None,
+    total: int = 0, base_offset: int = 0,
 ) -> None:
     b = _BufferedBlocks(blocks)
     while True:
@@ -251,19 +273,24 @@ def _stream_zip_blocks(
             if size_out != usize:
                 raise ValueError(f"size mismatch in {name}")
         if state_path is not None:
-            _save_resume(state_path, {"total": total, "next_offset": b.consumed})
+            # offsets are full-file-relative so a resumed Range request lands right
+            _save_resume(state_path, {"total": total, "next_offset": base_offset + b.consumed})
 
 
 def _process_zip_response(
-    r, dest_dir: Path, state_path: Path, total: int, progress: Progress, base: int
+    r, dest_dir: Path, state_path: Path, total: int, progress: Progress,
+    base: int, base_offset: int = 0, drop: int = 0,
 ) -> None:
     if total and progress is not None and hasattr(progress, "set_total"):
         progress.set_total(total)
-    blocks = _counted(r.iter_bytes(1 << 16), _offset_progress(progress, base))
-    _stream_zip_blocks(blocks, dest_dir, state_path=state_path, total=total)
+    blocks = r.iter_bytes(1 << 16)
+    if drop:
+        blocks = _drop_prefix(blocks, drop)
+    blocks = _counted(blocks, _offset_progress(progress, base))
+    _stream_zip_blocks(blocks, dest_dir, state_path=state_path, total=total, base_offset=base_offset)
 
 
-def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
+def stream_zip(url: str, dest_dir: Path, progress: Progress = None, stub_len: int = 0) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     state_path = dest_dir / RESUME_NAME
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
@@ -280,14 +307,19 @@ def stream_zip(url: str, dest_dir: Path, progress: Progress = None) -> None:
             ) as r:
                 r.raise_for_status()
                 if r.status_code == 206:  # server honors resume
-                    _process_zip_response(r, dest_dir, state_path, total, progress, resume["next_offset"])
+                    # Range stream starts past the stub: no drop, but offsets
+                    # must continue from the resume point
+                    _process_zip_response(
+                        r, dest_dir, state_path, total, progress,
+                        resume["next_offset"], base_offset=resume["next_offset"],
+                    )
                     return
             # 200 without 206: server ignored Range — cannot resume, start over
             state_path.unlink(missing_ok=True)
             print(style.yellow("Server does not support resume - starting over."))
         with client.stream("GET", url) as r:
             r.raise_for_status()
-            _process_zip_response(r, dest_dir, state_path, total, progress, 0)
+            _process_zip_response(r, dest_dir, state_path, total, progress, 0, base_offset=stub_len, drop=stub_len)
 
 
 class _IterStream:
@@ -349,9 +381,9 @@ def stream_archive(url: str, dest_dir: Path, progress: Progress = None) -> None:
         with client.stream("GET", url) as r:
             r.raise_for_status()
             first = next(r.iter_bytes(1 << 16), b"")
-            kind = _sniff(first)
+            kind, stub_len = _sniff(first)
     if kind == "zip":
-        stream_zip(url, dest_dir, progress)
+        stream_zip(url, dest_dir, progress, stub_len=stub_len)
     elif kind in ("tar", "gzip", "xz", "bz2", "zstd"):
         stream_tar(url, dest_dir, progress)
     elif kind in ("rar", "7z"):

@@ -148,12 +148,6 @@ def main(argv: list[str] | None = None) -> int:
             _wait_close()
             return 0
 
-        print("[1] Download with AntiCompress (stream)")
-        print("[2] Normal download (Firefox saves it)")
-        print()
-        print("[1] Download with AntiCompress (stream)")
-        print("[2] Normal download (Firefox saves it)")
-        print()
         choice = input("Choice [1/2]: ").strip()
 
         if choice != "1":

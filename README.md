@@ -49,3 +49,22 @@ Solid multi-part RAR (FitGirl-style) cannot be streamed from a partial
 download — no tool can, the format forbids it. Repack them once (works even
 on a disk that only fits the final game, thanks to volume deletion), then
 they stream forever.
+
+## Firefox bridge (optional)
+
+Click a download link and get a terminal chooser instead of a browser download:
+stream it with AntiCompress (1x disk space) or download normally.
+
+```
+# one-time install (writes HKCU registry key, no admin needed)
+anticompress install-bridge
+
+# then load the extension in Firefox:
+#   about:debugging -> This Firefox -> Load Temporary Add-on ->
+#   %APPDATA%\anticompress\extension\manifest.json
+```
+
+The extension cancels the browser download the instant it starts (a few KB
+max) and hands the URL to the CLI. Solid RAR/7z links still work — pick
+"Normal download" for those, then `anticompress repack` them (see above).
+Right-click a link -> "Download with AntiCompress" also works.

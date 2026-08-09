@@ -6,9 +6,9 @@ final game, never the game + its archive.**
 
 ## TL;DR for dummies (like me)
 
-**The problem:** you download a 60 GB game in a 50 GB zip, and your PC says
+**The problem:** you download a 60 GB game in a 80gb free storage, and your PC says
 "you need 110 GB to install this" — because it wants to keep the zip AND the
-game. Dumb.
+game before extracting. Dumb.
 
 **The fix:** AntiCompress unpacks the zip *while* it downloads, so you only
 ever need room for the game itself (60 GB, not 110 GB).

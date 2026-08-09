@@ -91,7 +91,7 @@ anticompress install game.acpkg -o "D:\Games\Game"
 Solid multi-part RAR (FitGirl-style) cannot be streamed from a partial
 download — no tool can, the format forbids it. Repack them once (works even
 on a disk that only fits the final game, thanks to volume deletion), then
-they stream forever.
+they stream forever. (may be possible in future updates)
 
 ## Firefox bridge (optional)
 
